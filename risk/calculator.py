@@ -32,6 +32,9 @@ from config import (
     TREND_RR, RANGE_RR,
     MAX_SL_POINTS,
     COMMISSION_PCT,
+    TRAIL_STAGES,
+    BE_MULT,
+    MAX_SL_MULT,
 )
 
 
@@ -214,3 +217,61 @@ def calc_pl_breakdown(
     comm   = entry_price * qty * COMMISSION_PCT
     net_pl = raw_pl - comm
     return {"raw_pl": raw_pl, "commission": comm, "net_pl": net_pl}
+
+
+def calc_trail_stage(profit_dist: float, atr: float) -> int:
+    """
+    Compute the highest trail stage unlocked by the profit distance.
+    Pine: profitDist >= atr * triggerMult.
+    """
+    stage = 0
+    for i in range(len(TRAIL_STAGES) - 1, -1, -1):
+        trigger_mult, _, _ = TRAIL_STAGES[i]
+        if profit_dist >= atr * trigger_mult:
+            stage = i + 1
+            break
+    return stage
+
+
+def get_trail_params(stage: int, atr: float) -> tuple[float, float]:
+    """
+    Return (activation_points, offset_points) for the given stage.
+    """
+    idx = max(stage - 1, 0)
+    _, pts_mult, off_mult = TRAIL_STAGES[idx]
+    return atr * pts_mult, atr * off_mult
+
+
+def should_trigger_be(profit_dist: float, atr: float) -> bool:
+    """
+    Breakeven check. Pine: profitDist > atr * beMult.
+    """
+    return profit_dist > atr * BE_MULT
+
+
+def max_sl_threshold(atr: float) -> float:
+    """
+    Compute max SL threshold using MAX_SL_MULT and MAX_SL_POINTS.
+    """
+    return min(atr * MAX_SL_MULT, MAX_SL_POINTS)
+
+
+def max_sl_hit(current_price: float, entry_price: float, atr: float, is_long: bool) -> bool:
+    """
+    Check if the max SL has been hit.
+    """
+    threshold = max_sl_threshold(atr)
+    if is_long:
+        return current_price <= entry_price - threshold
+    return current_price >= entry_price + threshold
+
+
+def max_sl_exit_price(entry_price: float, atr: float, is_long: bool) -> float:
+    """
+    Compute the exit price when max SL is hit.
+    """
+    threshold = max_sl_threshold(atr)
+    if is_long:
+        return entry_price - threshold
+    return entry_price + threshold
+
