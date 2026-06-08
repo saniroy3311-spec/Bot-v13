@@ -10,7 +10,9 @@ Type=simple
 User=root
 WorkingDirectory=/app/bot_v13
 EnvironmentFile=/app/bot_v13/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/usr/bin/python3 /app/bot_v13/main.py
+
 
 # Restart on crash — wait 10s between restarts
 Restart=on-failure
