@@ -28,10 +28,10 @@ logger   = logging.getLogger(__name__)
 MIN_BARS = 1000
 
 _INDIA_LIVE    = "https://api.india.delta.exchange"
-_INDIA_TESTNET = "https://testnet-api.india.delta.exchange"
+_INDIA_TESTNET = "https://cdn-ind.testnet.deltaex.org"
 
 _WS_LIVE    = "wss://socket.india.delta.exchange"
-_WS_TESTNET = "wss://testnet-socket.india.delta.exchange"
+_WS_TESTNET = "wss://socket-ind-pub.testnet.deltaex.org"
 
 _MAX_WS_FAILURES           = 5    
 _WS_RETRY_AFTER_REST_POLLS = 60   

@@ -41,7 +41,7 @@ def _timeframe_to_ms(tf: str) -> int:
 
 BAR_PERIOD_MS = _timeframe_to_ms(CANDLE_TIMEFRAME)
 _INDIA_LIVE    = "https://api.india.delta.exchange"
-_INDIA_TESTNET = "https://testnet-api.india.delta.exchange"
+_INDIA_TESTNET = "https://cdn-ind.testnet.deltaex.org"
 
 SIGNAL_LOG_PATH = os.environ.get("SIGNAL_LOG_PATH", "signals.jsonl")
 

@@ -104,7 +104,7 @@ from config import (
 logger = logging.getLogger("orders.manager")
 
 _INDIA_LIVE    = "https://api.india.delta.exchange"
-_INDIA_TESTNET = "https://testnet-api.india.delta.exchange"
+_INDIA_TESTNET = "https://cdn-ind.testnet.deltaex.org"
 
 # Phrases in ccxt / Delta error messages that mean "position is already gone"
 _ALREADY_CLOSED_PHRASES = (
