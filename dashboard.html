@@ -1538,7 +1538,9 @@ window.addEventListener('resize', () => {
 window.addEventListener('load', () => {
   initLWC();
   refresh();
+  renderRisk();
   setInterval(refresh, 5000);
+  setInterval(renderRisk, 5000);
   setInterval(async () => { const c = await fetchCandles(); if (c) setLWCCandles(c); }, 5 * 60 * 1000);
 });
 </script>

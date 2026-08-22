@@ -1,3 +1,5 @@
+PAPER_MODE = True  # Set to False for live trading
+
 """
 config.py - Bot v13  (PINE-ALIGNED 2026-06-03 → TRADE-MATCH-FIX 2026-06-05)
 

@@ -196,6 +196,16 @@ class _Handler(BaseHTTPRequestHandler):
             candles = _fetch_candles_binance(limit)
             self._send_json(candles)
 
+        elif path == "/api/config":
+            import config
+            cfg = {
+                "TREND_ATR_MULT": getattr(config, "TREND_ATR_MULT", 0.6),
+                "TREND_RR": getattr(config, "TREND_RR", 4.0),
+                "MAX_SL_POINTS": getattr(config, "MAX_SL_POINTS", 500.0),
+                "trail_stages": getattr(config, "TRAIL_STAGES", [80, 150, 250, 400, 600]),
+            }
+            self._send_json(cfg)
+
         else:
             self._send_json({"error": "not found"}, 404)
 
