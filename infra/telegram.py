@@ -1,3 +1,37 @@
+
+def sync_trade_from_telegram(msg_text):
+    try:
+        import os, re
+        from datetime import datetime
+        if 'EXIT' in msg_text:
+            entry_m = re.search(r'Entry\s*:\s*$?([0-9,.]+)', msg_text)
+            exit_m = re.search(r'Exit\s*:\s*$?([0-9,.]+)', msg_text)
+            pts_m = re.search(r'Points\s*:\s*([+-]?[0-9,.]+)', msg_text)
+            pnl_m = re.search(r'Gross P&L\s*:\s*$?([+-]?[0-9,.]+)', msg_text)
+            reason_m = re.search(r'Reason\s*:\s*(.+)', msg_text)
+            
+            entry_p = float(entry_m.group(1).replace(',', '')) if entry_m else 0.0
+            exit_p = float(exit_m.group(1).replace(',', '')) if exit_m else 0.0
+            pts = float(pts_m.group(1).replace(',', '')) if pts_m else 0.0
+            gross = float(pnl_m.group(1).replace(',', '')) if pnl_m else 0.0
+            reason = reason_m.group(1).strip() if reason_m else 'Closed'
+            fees = 3.15 if pts > 0 else 5.80
+            net_u = gross - fees
+            net_i = net_u * 84.0
+            
+            csv_path = '/root/Bot-v13/live_trades_journal.csv'
+            if not os.path.exists(csv_path):
+                with open(csv_path, 'w') as fp:
+                    fp.write('Timestamp,Symbol,Side,Entry,Exit,Points,Lots,Gross_USD,Fees,Net_USD,Net_INR,Status,Notes
+')
+            
+            status = 'WIN (TP Hit)' if pts > 0 else 'LOSS (SL Hit)'
+            with open(csv_path, 'a') as fp:
+                fp.write(f'{datetime.now().strftime("%Y-%m-%d %H:%M:%S")},BTC/USD:USD,{"SHORT" if "SHORT" in msg_text else "BUY"},{entry_p},{exit_p},{pts},100,{gross},{fees},{net_u:.2f},{net_i:.2f},{status},{reason}
+')
+    except Exception:
+        pass
+
 """
 infra/telegram.py — Bot v13
 ──────────────────────────────────────────────────────────────────────
