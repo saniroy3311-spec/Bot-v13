@@ -38,11 +38,11 @@ class Telegram:
         side = kwargs.get("side", trade.get("side", getattr(trade, "side", args[1] if len(args) > 1 else "LONG")))
         fill = kwargs.get("fill", kwargs.get("fill_price", trade.get("fill_price", trade.get("entry_price", getattr(trade, "fill_price", getattr(trade, "entry_price", args[2] if len(args) > 2 else 0.0))))))
         sl = kwargs.get("sl", kwargs.get("sl_price", trade.get("sl_price", trade.get("sl", getattr(trade, "sl_price", getattr(trade, "sl", args[3] if len(args) > 3 else 0.0))))))
-        tp = kwargs.get("tp", kwargs.get("tp_price", trade.get("tp_price", trade.get("tp", getattr(trade, "tp_price", getattr(trade, "tp", args[4] if len(args) > 4 else 0.0)))))
+        tp = kwargs.get("tp", kwargs.get("tp_price", trade.get("tp_price", trade.get("tp", getattr(trade, "tp_price", getattr(trade, "tp", args[4] if len(args) > 4 else 0.0))))))
         lots = kwargs.get("lots", trade.get("lots", getattr(trade, "lots", 100)))
         atr = kwargs.get("atr", trade.get("atr", getattr(trade, "atr", 116.41)))
-        rr = kwargs.get("rr", kwargs.get("r_multiple", trade.get("rr", getattr(trade, "rr", 3.6)))
-        
+        rr = kwargs.get("rr", kwargs.get("r_multiple", trade.get("rr", getattr(trade, "rr", 3.6))))
+
         try:
             fill = float(fill)
             sl = float(sl)
@@ -54,12 +54,12 @@ class Telegram:
 
         if fill == 0.0 and sl > 0 and tp > 0:
             fill = round((sl * 3.6 + tp) / 4.6, 2)
-            
+
         diff_sl = abs(fill - sl) if fill > 0 and sl > 0 else 135.0
         diff_tp = abs(tp - fill) if fill > 0 and tp > 0 else 486.0
-        
+
         emoji = "🟢" if "LONG" in str(side).upper() or "BUY" in str(side).upper() else "🔴"
-        
+
         lines = [
             f"{emoji} <b>ENTRY — {str(side).upper()}</b> | {lots} lots (0.1000 BTC)",
             f"<code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST</code>",
@@ -80,7 +80,7 @@ class Telegram:
         gross = kwargs.get("gross_pnl", trade.get("gross_pnl", getattr(trade, "gross_pnl", args[5] if len(args) > 5 else 0.0)))
         lots = kwargs.get("lots", trade.get("lots", getattr(trade, "lots", 100)))
         reason = kwargs.get("reason", trade.get("reason", getattr(trade, "reason", "Closed")))
-        
+
         try:
             entry = float(entry)
             exit_p = float(exit_p)
@@ -98,7 +98,7 @@ class Telegram:
 
         emoji = "💰" if points > 0 else "🔻"
         sign = "+" if points > 0 else ""
-        
+
         lines = [
             f"{emoji} <b>EXIT — {str(side).upper()}</b> | {lots} lots",
             f"<code>{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} IST</code>",
@@ -107,6 +107,6 @@ class Telegram:
             f"<b>Exit</b>      : ${exit_p:,.2f}",
             f"<b>Points</b>    : {sign}{points:.2f}",
             f"<b>Gross P&L</b> : {sign}${gross:.4f} USD",
-            f"<b>Reason</b>    : ${reason}"
+            f"<b>Reason</b>    : {reason}"
         ]
         return await self.send("\n".join(lines))
