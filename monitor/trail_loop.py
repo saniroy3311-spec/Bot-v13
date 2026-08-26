@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 monitor/trail_loop.py — Bot v13 — PINE-EXACT-TRAIL
 ════════════════════════════════════════════════════════════════════════════
@@ -84,7 +85,6 @@ Once BE fires, trail continues but SL can never go worse than entry.
 ════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

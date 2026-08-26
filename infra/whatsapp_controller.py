@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 infra/whatsapp_controller.py — Bot v13
 ──────────────────────────────────────────────────────────────────────
@@ -35,7 +36,6 @@ RUNS ALONGSIDE TELEGRAM CONTROLLER:
 ──────────────────────────────────────────────────────────────────────
 """
 
-from __future__ import annotations
 import asyncio
 import logging
 import os

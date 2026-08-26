@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 main.py — Bot v13  (Live Runner)
 ══════════════════════════════════════════════════════════════════════════════
@@ -34,7 +35,6 @@ RUNNING
 ══════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import logging

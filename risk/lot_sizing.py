@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 risk/lot_sizing.py — Bot v13
 ──────────────────────────────────────────────────────────────────────
@@ -15,7 +16,6 @@ EXAMPLES:
 ──────────────────────────────────────────────────────────────────────
 """
 
-from __future__ import annotations
 import logging
 
 logger = logging.getLogger(__name__)

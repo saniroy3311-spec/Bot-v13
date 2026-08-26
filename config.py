@@ -1,5 +1,3 @@
-PAPER_MODE = True  # Set to False for live trading
-
 """
 config.py - Bot v13  (PINE-ALIGNED 2026-06-03 → TRADE-MATCH-FIX 2026-06-05)
 
@@ -78,6 +76,7 @@ except ImportError:
 DELTA_API_KEY    = os.environ.get("DELTA_API_KEY",    "YOUR_API_KEY")
 DELTA_API_SECRET = os.environ.get("DELTA_API_SECRET", "YOUR_API_SECRET")
 DELTA_TESTNET    = os.environ.get("DELTA_TESTNET", "false").lower() == "true"
+DRY_RUN          = os.environ.get("DRY_RUN", "true").lower() == "true"
 
 SYMBOL    = os.environ.get("SYMBOL",    "BTC/USD:USD")
 ALERT_QTY = int(os.environ.get("ALERT_QTY", "1"))
@@ -319,3 +318,5 @@ TRAIL_T5_TRIG, TRAIL_T5_PTS, TRAIL_T5_OFF = TRAIL_STAGES[4]
 BAR_CLOSE_SL_EVAL = False
 
 # Bar-close SL evaluation mode
+
+PAPER_MODE = True

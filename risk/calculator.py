@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 risk/calculator.py — Bot v13
 ══════════════════════════════════════════════════════════════════════════════
@@ -23,7 +24,6 @@ CHANGE: TrailState now includes trail_armed and best_price fields.
 ══════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 from dataclasses import dataclass, field
 

@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 infra/telegram_controller.py — Bot v13
 ──────────────────────────────────────────────────────────────────────
@@ -16,7 +17,6 @@ handles INBOUND commands from authorised chat IDs.
 ──────────────────────────────────────────────────────────────────────
 """
 
-from __future__ import annotations
 import asyncio
 import logging
 from typing import Callable, Awaitable
