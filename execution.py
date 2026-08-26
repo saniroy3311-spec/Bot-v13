@@ -1,5 +1,20 @@
 from __future__ import annotations
 
+def calculate_directional_brackets(side, fill_price, risk_points, rr_multiple=3.6):
+    fill_price = float(fill_price)
+    risk_points = float(risk_points)
+    rr_multiple = float(rr_multiple)
+    target_points = risk_points * rr_multiple
+    
+    if 'LONG' in str(side).upper() or 'BUY' in str(side).upper():
+        sl = round(fill_price - risk_points, 1)
+        tp = round(fill_price + target_points, 1)
+    else:
+        sl = round(fill_price + risk_points, 1)
+        tp = round(fill_price - target_points, 1)
+    return sl, tp
+
+
 import asyncio
 import json
 import logging
@@ -11,7 +26,7 @@ from typing import Callable, Optional
 import ccxt.async_support as ccxt
 
 from config import (
-    DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET,
+    DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET, DRY_RUN,
     SYMBOL, ALERT_QTY, CANDLE_TIMEFRAME,
     TRAIL_LOOP_SEC, TRAIL_SL_PRE_FIRE_BUFFER,
     BE_MULT,
@@ -88,12 +103,21 @@ class OrderManager:
 
     async def place_entry(self, is_long: bool) -> dict:
         side = "buy" if is_long else "sell"
-        order = await _retry(lambda: self.exchange.create_order(
-            symbol = SYMBOL,
-            type   = "market",
-            side   = side,
-            amount = ALERT_QTY,
-        ))
+        if DRY_RUN:
+            ticker = await self.exchange.fetch_ticker(SYMBOL)
+            last_px = float(ticker.get("last") or 0)
+            logging.getLogger("execution").warning(
+                f"[DRY-RUN] Would place ENTRY | side={side} amount={ALERT_QTY} "
+                f"symbol={SYMBOL} approx_price={last_px}"
+            )
+            order = {"id": f"dryrun-{int(time.time())}", "average": last_px, "price": last_px}
+        else:
+            order = await _retry(lambda: self.exchange.create_order(
+                symbol = SYMBOL,
+                type   = "market",
+                side   = side,
+                amount = ALERT_QTY,
+            ))
         fill_price = float(order.get("average") or order.get("price") or 0)
         self.position = {
             "entry_order_id": order["id"],
@@ -107,13 +131,20 @@ class OrderManager:
             return {}
         is_long = self.position["is_long"]
         side    = "sell" if is_long else "buy"
-        order = await _retry(lambda: self.exchange.create_order(
-            symbol = SYMBOL,
-            type   = "market",
-            side   = side,
-            amount = ALERT_QTY,
-            params = {"reduce_only": True},
-        ))
+        if DRY_RUN:
+            logging.getLogger("execution").warning(
+                f"[DRY-RUN] Would CLOSE position | side={side} amount={ALERT_QTY} "
+                f"symbol={SYMBOL} reason={reason}"
+            )
+            order = {"id": f"dryrun-close-{int(time.time())}"}
+        else:
+            order = await _retry(lambda: self.exchange.create_order(
+                symbol = SYMBOL,
+                type   = "market",
+                side   = side,
+                amount = ALERT_QTY,
+                params = {"reduce_only": True},
+            ))
         self.position = None
         return order
 

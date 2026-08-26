@@ -1,3 +1,18 @@
+
+def calculate_directional_brackets(side, fill_price, risk_points, rr_multiple=3.6):
+    fill_price = float(fill_price)
+    risk_points = float(risk_points)
+    rr_multiple = float(rr_multiple)
+    target_points = risk_points * rr_multiple
+    
+    if 'LONG' in str(side).upper() or 'BUY' in str(side).upper():
+        sl = round(fill_price - risk_points, 1)
+        tp = round(fill_price + target_points, 1)
+    else:
+        sl = round(fill_price + risk_points, 1)
+        tp = round(fill_price - target_points, 1)
+    return sl, tp
+
 """
 strategy/signal.py — Bot v13
 ══════════════════════════════════════════════════════════════════════════════

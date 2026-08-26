@@ -1,3 +1,19 @@
+from __future__ import annotations
+
+def calculate_directional_brackets(side, fill_price, risk_points, rr_multiple=3.6):
+    fill_price = float(fill_price)
+    risk_points = float(risk_points)
+    rr_multiple = float(rr_multiple)
+    target_points = risk_points * rr_multiple
+    
+    if 'LONG' in str(side).upper() or 'BUY' in str(side).upper():
+        sl = round(fill_price - risk_points, 1)
+        tp = round(fill_price + target_points, 1)
+    else:
+        sl = round(fill_price + risk_points, 1)
+        tp = round(fill_price - target_points, 1)
+    return sl, tp
+
 """
 orders/manager.py — Bot v13  |  EMERGENCY-BRACKET ARCHITECTURE
 ══════════════════════════════════════════════════════════════════════════════
@@ -83,7 +99,6 @@ Delta Exchange endpoints
 ══════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import hashlib
@@ -97,8 +112,9 @@ import aiohttp
 import ccxt.async_support as ccxt
 
 from config import (
+    PAPER_MODE,
     DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET,
-    SYMBOL, ALERT_QTY,
+    SYMBOL, ALERT_QTY, DRY_RUN,
 )
 
 logger = logging.getLogger("orders.manager")
@@ -450,17 +466,55 @@ class OrderManager:
             f"sl={sl:.2f}  tp={tp:.2f}"
         )
 
+        if PAPER_MODE:
+            try:
+                ticker = await self.fetch_ticker() if hasattr(self, 'fetch_ticker') else await self.exchange.fetch_ticker(SYMBOL)
+                price = float((ticker or {}).get("last") or (ticker or {}).get("close") or 0.0)
+            except Exception:
+                price = float(sl) if sl else 0.0
+            order = {
+                "id": f"PAPER-{int(time.time() * 1000)}",
+                "average": price,
+                "price": price,
+                "info": {"paper": True}
+            }
+            fill = price
+            logger.info(f"[OM][PAPER] Simulated entry fill={fill:.2f}")
+            self._is_long = is_long
+            self._current_sl = float(sl) if sl else 0.0
+            self._current_tp = float(tp) if tp else 0.0
+            self._bracket_active = False
+            self._bracket_order_id = None
+            return order
         # ── 1. Market entry ──────────────────────────────────────────────────
-        order = await _retry(lambda: self.exchange.create_order(
-            symbol = SYMBOL,
-            type   = "market",
-            side   = side,
-            amount = ALERT_QTY,
-        ))
-        fill = float(order.get("average") or order.get("price") or 0.0)
-        logger.info(
-            f"[OM] Entry filled | id={order.get('id')}  fill={fill:.2f}"
-        )
+        if DRY_RUN:
+            ticker = await self.fetch_ticker()
+            fill = float(
+                (ticker or {}).get("last")
+                or (ticker or {}).get("markPrice")
+                or 0.0
+            )
+            order = {
+                "id": f"paper-{int(time.time() * 1000)}",
+                "average": fill,
+                "price": fill,
+                "info": {"paper_trade": True},
+            }
+            logger.info(
+                f"[OM] 📝 PAPER entry (no live order sent) | "
+                f"id={order['id']}  fill={fill:.2f}"
+            )
+        else:
+            order = await _retry(lambda: self.exchange.create_order(
+                symbol = SYMBOL,
+                type   = "market",
+                side   = side,
+                amount = ALERT_QTY,
+            ))
+            fill = float(order.get("average") or order.get("price") or 0.0)
+            logger.info(
+                f"[OM] Entry filled | id={order.get('id')}  fill={fill:.2f}"
+            )
 
         # ── 2. Cache state ───────────────────────────────────────────────────
         self._is_long          = is_long
@@ -470,6 +524,10 @@ class OrderManager:
         self._bracket_order_id = None
 
         # ── 3. Emergency bracket SL (placed once, never amended) ─────────────
+        if DRY_RUN:
+            logger.info("[OM] 📝 PAPER mode — skipping live bracket placement.")
+            return order
+
         if self._product_id is None:
             logger.warning(
                 "[OM] Emergency bracket disabled (no product_id). "
@@ -564,6 +622,10 @@ class OrderManager:
         every time this method ran. The signed REST path is already used
         throughout this file for bracket operations and is reliable.
         """
+        if DRY_RUN:
+            logger.debug("[OM] PAPER mode — skipping live cancel_all_orders.")
+            await self.cancel_bracket()
+            return
         try:
             if self._product_id is not None:
                 body = {
@@ -623,6 +685,40 @@ class OrderManager:
         logger.info(
             f"[OM] Closing position | side={side}  reason={reason}"
         )
+
+        if DRY_RUN:
+            ticker = await self.fetch_ticker()
+            fill = float(
+                (ticker or {}).get("last")
+                or (ticker or {}).get("markPrice")
+                or 0.0
+            )
+            order = {
+                "id": f"paper-{int(time.time() * 1000)}",
+                "average": fill,
+                "price": fill,
+                "info": {"paper_trade": True},
+            }
+            logger.info(
+                f"[OM] 📝 PAPER close (no live order sent) | "
+                f"id={order['id']}  fill={fill:.2f}"
+            )
+            return order
+
+        if PAPER_MODE:
+            try:
+                ticker = await self.fetch_ticker() if hasattr(self, 'fetch_ticker') else await self.exchange.fetch_ticker(SYMBOL)
+                price = float((ticker or {}).get("last") or (ticker or {}).get("close") or 0.0)
+            except Exception:
+                price = 0.0
+            order = {
+                "id": f"PAPER-{int(time.time() * 1000)}",
+                "average": price,
+                "price": price,
+                "info": {"paper": True}
+            }
+            logger.info(f"[OM][PAPER] Simulated close fill={price:.2f}")
+            return order
         try:
             order = await _retry(lambda: self.exchange.create_order(
                 symbol = SYMBOL,
