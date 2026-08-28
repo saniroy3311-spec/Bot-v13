@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 orders/manager.py — Bot v13  |  EMERGENCY-BRACKET ARCHITECTURE
 ══════════════════════════════════════════════════════════════════════════════
@@ -83,7 +84,6 @@ Delta Exchange endpoints
 ══════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import hashlib

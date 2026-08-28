@@ -96,6 +96,7 @@ except ImportError:
 
     # Transparent no-op decorator so the functions below work unchanged.
     def njit(*args, **kwargs):
+        pass
         def decorator(fn):
             return fn
         # Called as @njit or @njit(cache=True) — handle both forms.
