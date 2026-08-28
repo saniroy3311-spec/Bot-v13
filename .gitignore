@@ -5,3 +5,7 @@
 __pycache__/
 *.pyc
 .pm2/
+journal.db
+state_btc.json
+.corrupt_backup/
+signals.jsonl
