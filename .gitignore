@@ -9,3 +9,9 @@ journal.db
 state_btc.json
 .corrupt_backup/
 signals.jsonl
+.env
+*.db
+*.db.bak
+state_*.json
+.corrupt_backup/
+__pycache__/
