@@ -4,25 +4,26 @@ class TrailMonitor:
 
     def evaluate_trailing_and_exits(self, pos: dict, current_price: float, high: float, low: float) -> tuple:
         """
-        Updates position state with high/low tracking, breakeven step-up,
-        5-stage progressive trailing lock, and evaluates exit triggers.
+        Maintains fixed hard SL at Stage 0 (no micro-exits).
+        Applies Breakeven protection (+15 pts) upon 1.0x risk gain and activates
+        5-stage progressive profit locking only after reaching +140 pts.
         Returns: (updated_pos, exit_occurred, exit_price, exit_reason, notification_event)
         """
         side = pos['side']
-        entry_p = pos['entry_price']
-        sl_p = pos['sl_price']
-        tp_p = pos['tp_price']
-        initial_sl_pts = pos.get('initial_sl_pts', 115.0)
+        entry_p = float(pos['entry_price'])
+        tp_p = float(pos['tp_price'])
+        initial_sl_pts = float(pos.get('initial_sl_pts', 115.0))
         is_be_locked = pos.get('is_be_locked', False)
         current_stage = pos.get('current_trail_stage', 0)
         
-        trail_stages = getattr(self.config, 'TRAIL_STAGES', [
-            (140.0, 30.0),
-            (220.0, 100.0),
-            (300.0, 180.0),
-            (380.0, 260.0),
-            (450.0, 340.0)
-        ])
+        # 5-Stage Progressive Targets (Trigger Points, Locked Profit Points)
+        trail_stages = [
+            (140.0, 30.0),   # Stage 1: +140 pts gain -> Lock +30 pts
+            (240.0, 120.0),  # Stage 2: +240 pts gain -> Lock +120 pts
+            (340.0, 220.0),  # Stage 3: +340 pts gain -> Lock +220 pts
+            (440.0, 330.0),  # Stage 4: +440 pts gain -> Lock +330 pts
+            (560.0, 450.0)   # Stage 5: +560 pts gain -> Lock +450 pts
+        ]
         
         event = None
 
@@ -31,7 +32,7 @@ class TrailMonitor:
             pos['lowest_p'] = min(pos.get('lowest_p', entry_p), low)
             gain_pts = pos['highest_p'] - entry_p
 
-            # 1. Breakeven Step-up (When gain >= 1.0x initial risk)
+            # 1. Breakeven Lock (+15 pts above entry after reaching 1.0x initial risk)
             if not is_be_locked and gain_pts >= initial_sl_pts:
                 pos['is_be_locked'] = True
                 new_sl = round(entry_p + 15.0, 2)
@@ -42,7 +43,7 @@ class TrailMonitor:
                         'text': f"🛡️ *BREAKEVEN LOCKED*\n• Side: *LONG*\n• Locked SL: `${new_sl:,.2f}` (+15 pts above entry `${entry_p:,.2f}`)"
                     }
 
-            # 2. 5-Stage Dynamic Profit Locks
+            # 2. 5-Stage Dynamic Trailing Locks (No trailing occurs under +140 pts)
             for s_idx, (trig_pts, lock_pts) in enumerate(trail_stages):
                 stage_num = s_idx + 1
                 if gain_pts >= trig_pts and current_stage < stage_num:
@@ -78,7 +79,7 @@ class TrailMonitor:
             pos['highest_p'] = max(pos.get('highest_p', entry_p), high)
             gain_pts = entry_p - pos['lowest_p']
 
-            # 1. Breakeven Step-up
+            # 1. Breakeven Lock (-15 pts below entry after reaching 1.0x initial risk)
             if not is_be_locked and gain_pts >= initial_sl_pts:
                 pos['is_be_locked'] = True
                 new_sl = round(entry_p - 15.0, 2)
@@ -89,7 +90,7 @@ class TrailMonitor:
                         'text': f"🛡️ *BREAKEVEN LOCKED*\n• Side: *SHORT*\n• Locked SL: `${new_sl:,.2f}` (-15 pts below entry `${entry_p:,.2f}`)"
                     }
 
-            # 2. 5-Stage Dynamic Profit Locks
+            # 2. 5-Stage Dynamic Trailing Locks
             for s_idx, (trig_pts, lock_pts) in enumerate(trail_stages):
                 stage_num = s_idx + 1
                 if gain_pts >= trig_pts and current_stage < stage_num:

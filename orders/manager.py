@@ -10,15 +10,15 @@ class OrderManager:
 
     def create_bracket_order(self, side: str, strategy: str, current_price: float, sl_pts: float, tp_pts: float, lots: int, btc_size: float) -> dict:
         """
-        Creates an initialized position state with valid fill price and non-inverted brackets.
+        Initializes position state with correct non-inverted SL/TP brackets.
         """
         slippage = self.config.SLIPPAGE_PTS if side == 'LONG' else -self.config.SLIPPAGE_PTS
-        fill_price = round(current_price + (slippage if self.config.PAPER_TRADING else 0.0), 2)
+        fill_price = round(current_price + (slippage if getattr(self.config, 'PAPER_TRADING', False) else 0.0), 2)
         
         if side == 'LONG':
             sl_price = round(fill_price - sl_pts, 2)
             tp_price = round(fill_price + tp_pts, 2)
-        else:
+        else: # SHORT
             sl_price = round(fill_price + sl_pts, 2)
             tp_price = round(fill_price - tp_pts, 2)
 
