@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 feed/fills_feed.py — Bot v13  |  FIX-FILLS-WS
 ════════════════════════════════════════════════════════════════════════════════
@@ -46,7 +47,6 @@ Delta fills WS
 ════════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import hashlib

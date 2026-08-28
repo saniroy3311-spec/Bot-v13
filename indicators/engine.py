@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 indicators/engine.py — Bot v13 (numba-accelerated, Pine-exact)
 
@@ -48,7 +49,6 @@ PRESERVED FROM ORIGINAL
 ─────────────────────────────────────────────────────────────────────────────
 """
 
-from __future__ import annotations
 
 import logging
 from dataclasses import dataclass

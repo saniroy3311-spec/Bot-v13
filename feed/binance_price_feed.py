@@ -1,3 +1,4 @@
+from __future__ import annotations
 """
 feed/binance_price_feed.py  —  Bot v13  (BINANCE-EXIT-FEED-v1)
 ════════════════════════════════════════════════════════════════════════════════
@@ -71,7 +72,6 @@ CHANGES REQUIRED IN main.py:
 ════════════════════════════════════════════════════════════════════════════════
 """
 
-from __future__ import annotations
 
 import asyncio
 import json
