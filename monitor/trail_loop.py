@@ -2,21 +2,32 @@
 monitor/trail_loop.py — Bot v13
 
 Provides TrailMonitor. Keeps the pristine evaluate_trailing_and_exits() intact,
-and adds safe no-op stubs for every method the feed loops (ws_feed, binance_px,
+and adds safe stubs for every method the feed loops (ws_feed, binance_px_feed,
 fills_feed) call: push_ws_candle, on_price_tick, push_delta_tick, on_bar_close,
 set_entry_bar_boundary, start, stop, _fire_exit, and the _running/_exit_fired/
 _state attributes.
 
-Why no-ops:
-  These methods normally push intrabar prices/candles to an in-memory trail
-  loop that trails the SL as price moves favorably. Without them the feed
-  loops crash with AttributeError and reconnect endlessly.
+ASYNC vs SYNC — verified against actual call sites in the pristine ZIP:
+  async (wrapped in loop.create_task(...) or awaited directly):
+    - on_price_tick        (ws_feed.py:460, binance_price_feed.py:225 — awaited)
+    - push_delta_tick       (ws_feed.py:324, ws_feed.py:468 — loop.create_task)
+    - _fire_exit            (fills_feed.py:346 — loop.create_task)
+  sync (called directly, never wrapped/awaited):
+    - push_ws_candle        (ws_feed.py:403, 463, 513 — direct calls)
+    - on_bar_close          (main.py:293 — direct call with kwargs)
+    - start / stop          (main.py — direct calls)
+
+Getting sync/async wrong here causes:
+  "TypeError: a coroutine was expected, got None" when a sync method is
+  wrapped in create_task() (calling a sync function returns None, not a
+  coroutine, and create_task(None) throws exactly this error).
 
 Safety note:
   When the bot opens a position it places a bracket SL + TP on Delta Exchange
-  itself. Those exchange-side orders protect the position even if the internal
-  trail loop is idle. What you LOSE with no-ops is the trail-up feature (SL
-  moving up as price moves up). What you DON'T lose is stop-loss protection.
+  itself. Those exchange-side orders protect the position even while these
+  stubs are no-ops. What's degraded until the real trail engine is restored
+  is the trail-up feature (SL tightening as price moves favorably) — the
+  initial SL/TP still fully protects the position.
 """
 import logging
 from typing import Optional
@@ -32,14 +43,14 @@ class TrailMonitor:
         self.telegram     = telegram
         self.journal      = journal
 
-        # Attributes read by feed loops — MUST exist to avoid AttributeError
+        # Attributes read directly by feed loops — must exist
         self._running     : bool  = False
         self._exit_fired  : bool  = False
-        self._state              = None       # TrailState when a trade is open
-        self._risk               = None       # RiskLevels when a trade is open
+        self._state               = None      # TrailState when a trade is open
+        self._risk                = None      # RiskLevels when a trade is open
         self._entry_bar_boundary : Optional[int] = None
 
-        # High/low accumulator for intrabar (updated by push_ws_candle)
+        # Intrabar high/low accumulator (updated by push_ws_candle)
         self._ws_high     : float = 0.0
         self._ws_low      : float = 0.0
         self._last_price  : float = 0.0
@@ -114,49 +125,56 @@ class TrailMonitor:
 
         return pos, False, 0.0, "", event
 
-    # ─── No-op stubs so the feed loops don't crash ──────────────────────────
-    # These are called every WS tick / candle by ws_feed and binance_px_feed.
+    # ─── SYNC stubs — called directly, never wrapped in create_task ────────
 
     def push_ws_candle(self, high: float, low: float, source: str = None) -> None:
-        """Update intrabar high/low accumulator. Safe no-op."""
+        """Update intrabar high/low accumulator. Called directly (sync)."""
         self._ws_high = max(self._ws_high, high) if self._ws_high else high
         self._ws_low  = min(self._ws_low,  low)  if self._ws_low  else low
 
-    async def on_price_tick(self, price: float, source: str = None) -> None:
-        """Async tick handler — no-op when no position is open."""
-        self._last_price = price
-        # When a real position is open and _running=True, real trail logic
-        # would evaluate SL/TP here. With no position the exchange-side
-        # bracket orders handle protection.
-        return None
-
-    def push_delta_tick(self, price: float) -> None:
-        """Sync alias for on_price_tick — no-op."""
-        self._last_price = price
-
-    def on_bar_close(self, *args, **kwargs) -> None:
-        """Bar-close hook — no-op."""
+    def on_bar_close(self, bar_close=None, bar_high=None, bar_low=None,
+                     bar_open=None, current_atr=None, **kwargs) -> None:
+        """Bar-close hook — called directly with kwargs (sync)."""
         return None
 
     def set_entry_bar_boundary(self, ts_ms: int) -> None:
         self._entry_bar_boundary = ts_ms
 
     def start(self, *args, **kwargs) -> None:
-        """Mark loop as running. Real loop start would begin async task here."""
+        """Mark loop as running (sync, called directly)."""
         self._running    = True
         self._exit_fired = False
 
     def stop(self) -> None:
-        self._running    = False
+        self._running = False
 
-    def _fire_exit(self, price: float, reason: str, source: str = None) -> None:
-        """Exit trigger — flags exit as fired but doesn't place exchange order.
-        The exchange-side bracket SL/TP will trigger the actual exit."""
+    # ─── ASYNC stubs — wrapped in loop.create_task(...) at the call site ───
+    # MUST be async def: calling a sync function inside create_task() passes
+    # None (the sync function's return value) instead of a coroutine, and
+    # create_task(None) raises "a coroutine was expected, got None".
+
+    async def on_price_tick(self, price: float, source: str = None) -> None:
+        """Awaited directly in binance_price_feed._on_trade(), and wrapped
+        in loop.create_task(...) in ws_feed.py. Must be async."""
+        self._last_price = price
+        return None
+
+    async def push_delta_tick(self, price: float) -> None:
+        """Wrapped in loop.create_task(...) in ws_feed.py (2 call sites).
+        Must be async — was incorrectly sync in the previous patch, causing
+        'a coroutine was expected, got None'."""
+        self._last_price = price
+        return None
+
+    async def _fire_exit(self, price: float, reason: str, source: str = None) -> None:
+        """Wrapped in loop.create_task(...) in fills_feed.py. Must be async —
+        was incorrectly sync in the previous patch."""
         self._exit_fired = True
         logger.info(f"[TRAIL] Exit signaled | price={price} reason={reason} source={source}")
+        return None
 
 
-# Backward-compat alias — some earlier patched code called it TrailLoopMonitor
+# Backward-compat alias — some earlier patched code referenced this name
 TrailLoopMonitor = TrailMonitor
 
 __all__ = ["TrailMonitor", "TrailLoopMonitor"]
