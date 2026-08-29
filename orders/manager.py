@@ -98,7 +98,7 @@ import ccxt.async_support as ccxt
 
 from config import (
     DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET,
-    SYMBOL, ALERT_QTY, DRY_RUN,
+    SYMBOL, POSITION_BTC_SIZE, DRY_RUN,
 )
 
 logger = logging.getLogger("orders.manager")
@@ -357,7 +357,7 @@ class OrderManager:
                 f"product_symbol={self._product_symbol}"
             )
 
-        logger.info(f"[OM] Initialized — symbol={SYMBOL}  qty={ALERT_QTY}")
+        logger.info(f"[OM] Initialized — symbol={SYMBOL}  qty={POSITION_BTC_SIZE}")
 
     async def close_exchange(self) -> None:
         """Close the ccxt session and the bracket-endpoint HTTP session."""
@@ -446,7 +446,7 @@ class OrderManager:
         """
         side = "buy" if is_long else "sell"
         logger.info(
-            f"[OM] Placing entry | side={side}  qty={ALERT_QTY}  "
+            f"[OM] Placing entry | side={side}  qty={POSITION_BTC_SIZE}  "
             f"sl={sl:.2f}  tp={tp:.2f}"
         )
 
@@ -473,7 +473,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = ALERT_QTY,
+                amount = POSITION_BTC_SIZE,
             ))
             fill = float(order.get("average") or order.get("price") or 0.0)
             logger.info(
@@ -674,7 +674,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = ALERT_QTY,
+                amount = POSITION_BTC_SIZE,
                 params = {"reduce_only": True},
             ))
             fill = float(order.get("average") or order.get("price") or 0.0)
