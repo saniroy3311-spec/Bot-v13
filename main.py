@@ -46,7 +46,7 @@ from typing import Optional
 
 # ── Canonical module imports ───────────────────────────────────────────────────
 from config import (
-    SYMBOL, ALERT_QTY, CANDLE_TIMEFRAME, FILTER_VOL_ENABLED,
+    SYMBOL, POSITION_BTC_SIZE, CANDLE_TIMEFRAME, FILTER_VOL_ENABLED,
     POSITION_BTC_SIZE, TREND_ATR_MULT, RANGE_ATR_MULT,
 )
 from feed.ws_feed            import CandleFeed
@@ -109,10 +109,10 @@ class BotV13:
         )
 
         try:
-            self._qty_lots = btc_to_lots(POSITION_BTC_SIZE) if POSITION_BTC_SIZE > 0 else ALERT_QTY
+            self._qty_lots = btc_to_lots(POSITION_BTC_SIZE) if POSITION_BTC_SIZE > 0 else POSITION_BTC_SIZE
         except Exception as e:
-            logger.warning(f"btc_to_lots failed ({e}) — falling back to ALERT_QTY={ALERT_QTY}")
-            self._qty_lots = ALERT_QTY
+            logger.warning(f"btc_to_lots failed ({e}) — falling back to POSITION_BTC_SIZE={POSITION_BTC_SIZE}")
+            self._qty_lots = POSITION_BTC_SIZE
 
         _dashboard.init(self._journal)
         self._trail_mon = TrailMonitor(
