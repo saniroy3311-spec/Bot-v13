@@ -1,3 +1,16 @@
+
+def calculate_directional_brackets(side, fill_price, risk_points, rr_multiple=3.65):
+    fill = float(fill_price)
+    risk = min(135.0, max(95.0, float(risk_points)))
+    target = round(risk * float(rr_multiple), 2)
+    if 'LONG' in str(side).upper() or 'BUY' in str(side).upper():
+        sl = round(fill - risk, 2)
+        tp = round(fill + target, 2)
+    else:
+        sl = round(fill + risk, 2)
+        tp = round(fill - target, 2)
+    return sl, tp
+
 from __future__ import annotations
 """
 orders/manager.py — Bot v13  |  EMERGENCY-BRACKET ARCHITECTURE
