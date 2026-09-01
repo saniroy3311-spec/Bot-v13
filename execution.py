@@ -116,7 +116,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = ALERT_QTY,
+                amount = int(float(ALERT_QTY) * 1000),  # Convert to lots
             ))
         fill_price = float(order.get("average") or order.get("price") or 0)
         self.position = {
@@ -142,7 +142,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = ALERT_QTY,
+                amount = int(float(ALERT_QTY) * 1000),  # Convert to lots
                 params = {"reduce_only": True},
             ))
         self.position = None

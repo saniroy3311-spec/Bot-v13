@@ -486,7 +486,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = POSITION_BTC_SIZE,
+                amount = int(POSITION_BTC_SIZE * 1000),  # Convert 0.1 BTC to 100 lots
             ))
             fill = float(order.get("average") or order.get("price") or 0.0)
             logger.info(
@@ -687,7 +687,7 @@ class OrderManager:
                 symbol = SYMBOL,
                 type   = "market",
                 side   = side,
-                amount = POSITION_BTC_SIZE,
+                amount = int(POSITION_BTC_SIZE * 1000),  # Convert 0.1 BTC to 100 lots
                 params = {"reduce_only": True},
             ))
             fill = float(order.get("average") or order.get("price") or 0.0)
