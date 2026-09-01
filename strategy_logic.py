@@ -216,7 +216,7 @@ def compute(df: pd.DataFrame) -> IndicatorSnapshot:
     open_v   = float(last["open"])
     close_v  = float(last["close"])
 
-    atr_ok  = bool(atr_v < atr_sma * FILTER_ATR_MULT)
+    atr_ok  = bool(atr_v > atr_sma * FILTER_ATR_MULT)
     body_ok = True   # Pine has no body-size filter — removed to match Pine parity
 
     if FILTER_VOL_ENABLED:
