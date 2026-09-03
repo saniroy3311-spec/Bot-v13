@@ -194,11 +194,11 @@ PINE_MINTICK = float(os.environ.get("PINE_MINTICK", "1.0"))
 # Format: (trigger_ATR_mult, trail_points_mult, trail_offset_mult)
 # Values verified line-by-line against Pine inputs t1Trig/t1Pts/t1Off … t5*.
 TRAIL_STAGES = [
-    (0.8,  0.50, 0.40),   # Stage 1   — Pine t1Trig/t1Pts/t1Off
-    (1.5,  0.40, 0.30),   # Stage 2   — Pine t2Trig/t2Pts/t2Off
-    (2.5,  0.30, 0.25),   # Stage 3   — Pine t3Trig/t3Pts/t3Off
-    (4.0,  0.20, 0.15),   # Stage 4   — Pine t4Trig/t4Pts/t4Off
-    (6.0,  0.15, 0.10),   # Stage 5   — Pine t5Trig/t5Pts/t5Off
+    (4.00, 4.00, 1.80),   # Stage 1: Trigger ~300 pts, Trail offset ~130 pts
+    (6.00, 6.00, 2.20),   # Stage 2: Trigger ~450 pts, Trail offset ~160 pts
+    (8.00, 8.00, 2.70),   # Stage 3: Trigger ~600 pts, Trail offset ~200 pts
+    (10.0, 10.0, 3.00),   # Stage 4: Trigger ~750 pts, Trail offset ~220 pts
+    (12.0, 12.0, 3.50),   # Stage 5: Big Runner Open Sky (1,000+ pts)
 ]
 
 # ──────────────────────────────────────────────
