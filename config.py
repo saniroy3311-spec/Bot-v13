@@ -336,3 +336,74 @@ WS_RECONNECT_MAX_DELAY = 60
 WS_MAX_RECONNECTS_PER_HOUR = 20
 RECONCILE_INTERVAL = 60
 CLOSE_POSITIONS_ON_SHUTDOWN = False
+
+
+# ============================================================
+# TRADE GUARDS / ANTI-STREAK PROTECTION
+# ============================================================
+COOLDOWN_BARS = int(os.environ.get("COOLDOWN_BARS", "4"))
+MAX_CONSECUTIVE_LOSSES_PAUSE = int(
+    os.environ.get("MAX_CONSECUTIVE_LOSSES_PAUSE", "2")
+)
+CONSECUTIVE_LOSS_PAUSE_MINUTES = int(
+    os.environ.get("CONSECUTIVE_LOSS_PAUSE_MINUTES", "45")
+)
+CONSECUTIVE_LOSS_SIZE_SCALE = (
+    os.environ.get("CONSECUTIVE_LOSS_SIZE_SCALE", "true").lower() == "true"
+)
+MIN_SCALE_LOTS = int(os.environ.get("MIN_SCALE_LOTS", "1"))
+DIRECTIONAL_LOCKOUT_MINUTES = int(
+    os.environ.get("DIRECTIONAL_LOCKOUT_MINUTES", "30")
+)
+
+MIN_SL_POINTS = float(os.environ.get("MIN_SL_POINTS", "95.0"))
+
+MIN_RISK_POINTS = float(os.environ.get("MIN_RISK_POINTS", "95.0"))
+
+BRACKET_SL_MIN_PTS = float(os.environ.get("BRACKET_SL_MIN_PTS", "95.0"))
+
+SL_ATR_MULT = float(os.environ.get("SL_ATR_MULT", "1.85"))
+
+TRAIL_STAGE1_TRIGGER = float(os.environ.get("TRAIL_STAGE1_TRIGGER", "140.0"))
+
+TRAIL_STAGE1_POINTS = float(os.environ.get("TRAIL_STAGE1_POINTS", "30.0"))
+
+TRAIL_STAGE1_OFFSET = float(os.environ.get("TRAIL_STAGE1_OFFSET", "110.0"))
+
+TRAIL_STAGE2_TRIGGER = float(os.environ.get("TRAIL_STAGE2_TRIGGER", "240.0"))
+
+TRAIL_STAGE2_POINTS = float(os.environ.get("TRAIL_STAGE2_POINTS", "120.0"))
+
+TRAIL_STAGE2_OFFSET = float(os.environ.get("TRAIL_STAGE2_OFFSET", "120.0"))
+
+TRAIL_STAGE3_TRIGGER = float(os.environ.get("TRAIL_STAGE3_TRIGGER", "340.0"))
+
+TRAIL_STAGE3_POINTS = float(os.environ.get("TRAIL_STAGE3_POINTS", "220.0"))
+
+TRAIL_STAGE3_OFFSET = float(os.environ.get("TRAIL_STAGE3_OFFSET", "120.0"))
+
+TRAIL_STAGE4_TRIGGER = float(os.environ.get("TRAIL_STAGE4_TRIGGER", "440.0"))
+
+TRAIL_STAGE4_POINTS = float(os.environ.get("TRAIL_STAGE4_POINTS", "330.0"))
+
+TRAIL_STAGE4_OFFSET = float(os.environ.get("TRAIL_STAGE4_OFFSET", "110.0"))
+
+TRAIL_STAGE5_TRIGGER = float(os.environ.get("TRAIL_STAGE5_TRIGGER", "560.0"))
+
+TRAIL_STAGE5_POINTS = float(os.environ.get("TRAIL_STAGE5_POINTS", "450.0"))
+
+TRAIL_STAGE5_OFFSET = float(os.environ.get("TRAIL_STAGE5_OFFSET", "110.0"))
+
+BRACKET_SL_WIDEN_MULT = float(os.environ.get("BRACKET_SL_WIDEN_MULT", "1.5"))
+
+SL_CONFIRM_TICKS = int(os.environ.get("SL_CONFIRM_TICKS", "3"))
+
+TRAIL_SL_CONFIRM_TICKS = int(os.environ.get("TRAIL_SL_CONFIRM_TICKS", "2"))
+
+P_HARD_EXIT = os.environ.get("P_HARD_EXIT", "true").lower() == "true"
+
+PINE_TICK_TRUNCATE = os.environ.get("PINE_TICK_TRUNCATE", "true").lower() == "true"
+
+MAX_EXIT_SLIPPAGE_ATR_PCT = float(os.environ.get("MAX_EXIT_SLIPPAGE_ATR_PCT", "18.0"))
+
+DELTA_TICK_DIVERGENCE_WARN_PTS = float(os.environ.get("DELTA_TICK_DIVERGENCE_WARN_PTS", "10.0"))

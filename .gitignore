@@ -15,3 +15,4 @@ signals.jsonl
 state_*.json
 .corrupt_backup/
 __pycache__/
+credentials.json
