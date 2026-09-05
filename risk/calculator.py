@@ -37,6 +37,13 @@ from config import (
     MAX_SL_MULT,
 )
 
+# FIX 2026-09-05 — MIN_SL_POINTS was in .env but was never defined in config.py
+# and never applied here. That is how 6-22 point stops reached the exchange.
+# getattr keeps this file importable if the config fix block is not applied yet.
+import config as _cfg
+MIN_SL_POINTS = float(getattr(_cfg, "MIN_SL_POINTS", 0.0))
+MIN_SL_ACTION = str(getattr(_cfg, "MIN_SL_ACTION", "skip")).lower()
+
 
 # ─── Dataclasses ───────────────────────────────────────────────────────────────
 
@@ -63,6 +70,10 @@ class RiskLevels:
     is_trend:        bool
     entry_bar_open:  float = 0.0
     signal_close:    float = 0.0  # bar close that generated the signal
+    # FIX 2026-09-05 — set True when the computed stop is below MIN_SL_POINTS
+    # and MIN_SL_ACTION="skip". main.py MUST check this before entering.
+    rejected:        bool  = False
+    reject_reason:   str   = ""
 
 
 @dataclass
@@ -115,6 +126,22 @@ def calc_levels(
     rr        = TREND_RR       if is_trend else RANGE_RR
     stop_dist = min(atr * atr_mult, MAX_SL_POINTS)
 
+    # ── FIX 2026-09-05: enforce a MINIMUM stop distance ───────────────────────
+    # The old code had no floor. With RANGE_ATR_MULT=0.5 and ATR=16.96 it
+    # produced an 8.5 point stop on BTC — inside the spread-plus-noise band,
+    # so the trade could not survive regardless of direction.
+    rejected      = False
+    reject_reason = ""
+    if MIN_SL_POINTS > 0 and stop_dist < MIN_SL_POINTS:
+        if MIN_SL_ACTION == "widen":
+            stop_dist = min(MIN_SL_POINTS, MAX_SL_POINTS)
+        else:  # "skip" — refuse the setup rather than trade a noise-width stop
+            rejected      = True
+            reject_reason = (
+                f"stop {stop_dist:.2f} pts < MIN_SL_POINTS {MIN_SL_POINTS:.2f} "
+                f"(atr={atr:.2f} mult={atr_mult})"
+            )
+
     # Anchor to signal_close if provided; fall back to fill price
     anchor = signal_close if signal_close > 0 else entry_price
 
@@ -135,6 +162,8 @@ def calc_levels(
         is_trend       = is_trend,
         entry_bar_open = entry_bar_open,
         signal_close   = signal_close if signal_close > 0 else entry_price,
+        rejected       = rejected,
+        reject_reason  = reject_reason,
     )
 
 
