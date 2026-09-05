@@ -425,6 +425,68 @@ class OrderManager:
             logger.warning(f"[OM] fetch_open_position failed: {exc}")
         return None
 
+    # ══════════════════════════════════════════════════════════════════════════
+    # FIX 2026-09-05 — THE MOST DANGEROUS BUG IN THE REPO
+    # ══════════════════════════════════════════════════════════════════════════
+    # fetch_open_position() returns None for TWO completely different things:
+    #     (a) the account is genuinely flat
+    #     (b) the API call FAILED (timeout, rate limit, network blip)
+    #
+    # main.py:239 treated None as "flat" on every bar close. So one failed
+    # request made the bot: invent an exit price from the stop level, stop the
+    # trail monitor (removing all protection from a position that was still
+    # live), clear its state, and become free to open a SECOND position on the
+    # same bar. 32 of the 52 trades on 2026-09-04 carry the resulting
+    # "Bracket SL/TP (recovered)" label.
+    #
+    # This method never conflates the two. Callers must handle "UNKNOWN".
+    # ══════════════════════════════════════════════════════════════════════════
+    async def fetch_position_state(self):
+        """
+        Returns (state, position_dict_or_None) where state is one of:
+            "FLAT"    — exchange confirmed no open position
+            "OPEN"    — exchange confirmed an open position
+            "UNKNOWN" — the query failed; exposure is undetermined
+
+        On "UNKNOWN" the caller MUST NOT close local state, MUST NOT stop the
+        trail monitor, and MUST NOT open a new position.
+        """
+        try:
+            positions = await _retry(
+                lambda: self.exchange.fetch_positions([SYMBOL])
+            )
+        except Exception as exc:
+            logger.error(
+                f"[OM] fetch_position_state: query FAILED ({exc}). "
+                f"Returning UNKNOWN — exposure is undetermined."
+            )
+            return "UNKNOWN", None
+
+        if positions is None:
+            logger.error("[OM] fetch_position_state: null response -> UNKNOWN")
+            return "UNKNOWN", None
+
+        try:
+            for pos in positions:
+                size = float(pos.get("contracts", 0) or 0)
+                if abs(size) > 0 and pos.get("symbol") == SYMBOL:
+                    side      = str(pos.get("side", "long")).lower()
+                    entry_raw = (
+                        pos.get("entryPrice")
+                        or (pos.get("info") or {}).get("entry_price")
+                        or 0.0
+                    )
+                    return "OPEN", {
+                        "is_long":     side == "long",
+                        "entry_price": float(entry_raw),
+                        "contracts":   abs(size),
+                    }
+        except Exception as exc:
+            logger.error(f"[OM] fetch_position_state: bad payload ({exc}) -> UNKNOWN")
+            return "UNKNOWN", None
+
+        return "FLAT", None
+
     # Backward-compat alias — older modules (phase3, execution.py, and any stale
     # VPS code) call this name. Both names return the same data. This prevents
     # the "'OrderManager' object has no attribute 'fetch_position'" AttributeError
