@@ -1,297 +1,257 @@
+from __future__ import annotations
 """
-feed/ws_feed.py  —  Bot v13  (DELTA-TICK-FIX-v1)
+feed/fills_feed.py — Bot v13  |  FIX-FILLS-WS
+════════════════════════════════════════════════════════════════════════════════
+
+Delta Exchange WebSocket fills (user data) feed.
+
+WHY THIS EXISTS
+───────────────
+When mode=BRACKET, Delta's matching engine handles SL/TP at ~5ms latency.
+The Python tick loop has no way to know the bracket fired until:
+  A) update_bracket_sl() gets "open_order_not_found" → position check
+  B) on_bar_close() state sanity check detects in_position=True but Delta flat
+
+Path A was added in FIX-BRACKET-FIRED (manager.py) but still has a delay:
+it only triggers when the trail SL TIGHTENS (i.e. pushes a new SL to Delta).
+If the bracket SL fires but the trail hasn't tightened yet in that tick window,
+the bot won't discover the exit until the next bracket-update attempt.
+
+Path B only runs every 30 minutes at bar close — completely unacceptable.
+
+THIS FILE adds Path C — a real-time WebSocket subscription to Delta's private
+"fills" channel. Delta pushes a fill event within milliseconds of any order
+fill, including bracket SL/TP orders. On receiving a fill for our symbol on
+the close-side (sell for long, buy for short), the feed:
+  1. Identifies it as a bracket-side fill (stop_loss or take_profit order type)
+  2. Extracts the actual fill price
+  3. Calls TrailMonitor._fire_exit() immediately with the real fill price
+  4. Clears manager._bracket_active so no further update attempts are made
+
+RESULT
+──────
+  Before: bracket fires → 0 to 1800 seconds to detect (bar close drift check)
+  After:  bracket fires → ~50-200ms to detect (WS fill event round-trip)
+
+Delta fills WS
+──────────────
+  Live:    wss://socket.india.delta.exchange
+  Auth:    send {"type": "auth", "payload": {"api-key": ..., "signature": ...,
+            "timestamp": ...}} after connect
+  Subscribe: {"type": "subscribe", "payload": {"channels":
+              [{"name": "user_trades", "symbols": ["BTCUSD"]}]}}
+  Fill msg:  {"type": "user_trade", "symbol": "BTCUSD", "side": "buy/sell",
+              "price": "79287.5", "size": 1,
+              "order_type": "stop_loss_order" / "take_profit_order" / ...}
+
+════════════════════════════════════════════════════════════════════════════════
 """
 
+
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import time
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
-import pandas as pd
-import ccxt
-import ccxt.async_support as ccxt_async
 import websockets
 import websockets.exceptions
 
 from config import (
-    DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET,
-    SYMBOL, CANDLE_TIMEFRAME, WS_RECONNECT_SEC, EMA_TREND_LEN,
-    BINANCE_SIGNAL_FEED, BINANCE_SYMBOL,
-    TRAIL_EXIT_FROM_DELTA_WS,
+    DELTA_API_KEY, DELTA_API_SECRET, DELTA_TESTNET, SYMBOL,
 )
 
-logger   = logging.getLogger(__name__)
+if TYPE_CHECKING:
+    from monitor.trail_loop import TrailMonitor
+    from orders.manager     import OrderManager
 
-# SATURATION FIX: Increased from 450 to 1000 bars to guarantee 99.9% saturation of the EMA(200)
-# Matches TradingView's deep historical calculation exactly, fixing trade count offsets.
-MIN_BARS = 1000
-
-_INDIA_LIVE    = "https://api.india.delta.exchange"
-_INDIA_TESTNET = "https://cdn-ind.testnet.deltaex.org"
+logger = logging.getLogger("feed.fills_feed")
 
 _WS_LIVE    = "wss://socket.india.delta.exchange"
-_WS_TESTNET = "wss://socket-ind-pub.testnet.deltaex.org"
+_WS_TESTNET = "wss://socket-ind.testnet.deltaex.org"
 
-_MAX_WS_FAILURES           = 5    
-_WS_RETRY_AFTER_REST_POLLS = 60   
-_WS_HEARTBEAT_SEC          = 30
+# Reconnect delay on failure (seconds)
+_RECONNECT_SEC   = 5
+_MAX_RECONNECT   = 60  # cap backoff
 
-_BINANCE_DELTA_DIVERGENCE_MAX = 15.0
+# Order types Delta uses for bracket legs
+_SL_ORDER_TYPES = {"stop_loss_order", "stop_loss"}
+_TP_ORDER_TYPES = {"take_profit_order", "take_profit"}
+_BRACKET_ORDER_TYPES = _SL_ORDER_TYPES | _TP_ORDER_TYPES
 
-def _timeframe_to_ms(tf: str) -> int:
-    tf = tf.strip().lower()
-    if tf.endswith("m"):
-        return int(tf[:-1]) * 60 * 1000
-    if tf.endswith("h"):
-        return int(tf[:-1]) * 3600 * 1000
-    if tf.endswith("d"):
-        return int(tf[:-1]) * 86400 * 1000
-    raise ValueError(f"Unknown timeframe: {tf}")
 
-def _candle_boundary(ts_ms: int, period_ms: int) -> int:
-    return (ts_ms // period_ms) * period_ms
+def _make_auth_signature(ts: str) -> str:
+    """HMAC-SHA256 signature for Delta WS auth."""
+    msg = ("GET" + ts + "/live" + "").encode()
+    return hmac.new(
+        DELTA_API_SECRET.encode(), msg, hashlib.sha256
+    ).hexdigest()
 
-def _ccxt_to_ws_symbol(ccxt_symbol: str) -> str:
+
+def _ws_symbol(ccxt_symbol: str) -> str:
+    """BTC/USD:USD  →  BTCUSD"""
     return ccxt_symbol.split(":")[0].replace("/", "")
 
-def _timeframe_to_channel(timeframe: str) -> str:
-    return f"candlestick_{timeframe}"
 
-def _ts_to_ms(ts) -> int:
-    ts = int(ts)
-    if ts > 1_000_000_000_000_000:
-        return ts // 1000
-    if ts > 1_000_000_000_000:
-        return ts
-    return ts * 1000
+class FillsFeed:
+    """
+    Subscribes to Delta's user_trades WebSocket channel and fires
+    TrailMonitor exits immediately when a bracket SL/TP fill is detected.
 
-class CandleFeed:
-    def __init__(self, on_bar_close, on_feed_ready=None):
-        self.on_bar_close  = on_bar_close
-        async def _noop(): pass
-        self.on_feed_ready = on_feed_ready or _noop
+    Usage (in main.py):
+        self._fills_feed = FillsFeed(
+            trail_monitor = self._trail_mon,
+            order_manager = self._order_mgr,
+        )
+        self._fills_feed.start_task()
 
-        self._period_ms            = _timeframe_to_ms(CANDLE_TIMEFRAME)
-        self._last_candle_boundary = 0
-        self._df                   = pd.DataFrame()
-        self._exchange             = None
-        self._ready_fired          = False
-        self._ws_failures          = 0
-        self._rest_poll_count      = 0     
-        self._processing           = False
-        self._msg_count            = 0
-        self.trail_monitor         = None  
-        self._last_delta_tick: Optional[float] = None
+    Call stop() on shutdown.
+    """
 
-    @property
-    def last_delta_tick(self) -> Optional[float]:
-        return self._last_delta_tick
+    def __init__(
+        self,
+        trail_monitor: "TrailMonitor",
+        order_manager: "OrderManager",
+    ) -> None:
+        self._trail_mon  = trail_monitor
+        self._order_mgr  = order_manager
+        self._task: Optional[asyncio.Task] = None
+        self._ping_task: Optional[asyncio.Task] = None   # FIX: keepalive
+        self._running    = False
+        self._ws_symbol  = _ws_symbol(SYMBOL)
+        self._ws_conn    = None                           # FIX: hold current ws ref
+        self._PING_INTERVAL = 20                          # FIX: ping every 20s
+        self._seen_fill_ids: set[str] = set()
+        self._fill_agg: dict[str, dict[str, float]] = {}
 
-    async def start(self) -> None:
-        await self._load_history()
-        if not self._ready_fired:
-            self._ready_fired = True
-            await self.on_feed_ready()
+    # ── Lifecycle ──────────────────────────────────────────────────────────────
 
-        while True:
-            if self._ws_failures < _MAX_WS_FAILURES:
-                try:
-                    await self._run_websocket()
-                    self._ws_failures += 1
-                except Exception as e:
-                    self._ws_failures += 1
-                    logger.error(f"WebSocket feed error (failure {self._ws_failures}/{_MAX_WS_FAILURES}): {e}")
+    def start_task(self) -> None:
+        """Schedule the fills listener as a background asyncio task."""
+        self._running = True
+        loop = asyncio.get_running_loop()
+        self._task      = loop.create_task(self._run(),         name="fills_feed")
+        self._ping_task = loop.create_task(self._keepalive(),   name="fills_ping")  # FIX
+        logger.info(
+            f"[FILLS] FillsFeed started — listening for bracket fills on {self._ws_symbol}"
+        )
 
-                if self._ws_failures < _MAX_WS_FAILURES:
-                    wait = min(WS_RECONNECT_SEC * (2 ** (self._ws_failures - 1)), 60)
-                    logger.info(f"Reconnecting in {wait}s...")
-                    await asyncio.sleep(wait)
-                else:
+    def stop(self) -> None:
+        """Cancel the background task."""
+        self._running = False
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = None
+        if self._ping_task and not self._ping_task.done():   # FIX
+            self._ping_task.cancel()                         # FIX
+        self._ping_task = None                               # FIX
+        logger.info("[FILLS] FillsFeed stopped.")
+
+    # ── Keepalive ping ─────────────────────────────────────────────────────────
+
+    async def _keepalive(self) -> None:
+        """Send a ping every _PING_INTERVAL seconds to prevent silent WS drops.
+        FIX-FILLS-DEAD-SOCKET: on 2 consecutive ping failures, force-close the
+        socket so the reconnect loop kicks in within ~1 min instead of waiting
+        ~15 min for a TCP-level timeout (ping_interval/ping_timeout are disabled
+        here, so the library will not detect the dead socket on its own)."""
+        fails = 0
+        while self._running:
+            await asyncio.sleep(self._PING_INTERVAL)
+            ws = self._ws_conn
+            if ws is None:
+                fails = 0
+                continue
+            try:
+                pong = await ws.ping()
+                await asyncio.wait_for(asyncio.shield(pong), timeout=10)
+                fails = 0
+                logger.debug("[FILLS] Keepalive ping ✅")
+            except Exception as e:
+                fails += 1
+                logger.warning(f"[FILLS] Keepalive ping failed ({fails}): {e}")
+                if fails >= 2:
                     logger.warning(
-                        f"WebSocket failed {_MAX_WS_FAILURES} times — "
-                        f"switching to REST polling. Will retry WS after "
-                        f"{_WS_RETRY_AFTER_REST_POLLS} polls. [FIX-BUG4]"
+                        "[FILLS] 2 pings failed — forcing reconnect (dead socket)"
                     )
-                    self._rest_poll_count = 0
-            else:
-                try:
-                    await self._poll_rest_once()
-                except Exception as e:
-                    logger.error(f"REST poll error: {e}", exc_info=True)
-                    await asyncio.sleep(WS_RECONNECT_SEC)
-                    continue
+                    fails = 0
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
 
-                self._rest_poll_count += 1
-                if self._rest_poll_count >= _WS_RETRY_AFTER_REST_POLLS:
-                    logger.info(
-                        f"[FIX-BUG4] Attempting WS reconnection after "
-                        f"{_WS_RETRY_AFTER_REST_POLLS} REST polls..."
-                    )
-                    self._ws_failures     = 0
-                    self._rest_poll_count = 0
+    # ── Main loop ──────────────────────────────────────────────────────────────
 
-    async def _load_history(self) -> None:
-        base_url = _INDIA_TESTNET if DELTA_TESTNET else _INDIA_LIVE
-        delta_params = {
-            "apiKey"         : DELTA_API_KEY,
-            "secret"         : DELTA_API_SECRET,
-            "enableRateLimit": True,
-            "urls": {"api": {"public": base_url, "private": base_url}},
-        }
+    async def _run(self) -> None:
+        """Reconnect loop — maintains WS connection indefinitely."""
+        attempt      = 0
+        reconnect_sec = _RECONNECT_SEC
 
-        exchange = ccxt_async.delta(delta_params)
-        try:
-            logger.info(f"Loading market map from Delta India ({base_url})...")
-            await exchange.load_markets()
-            if SYMBOL not in exchange.markets:
-                available = [
-                    s for s in exchange.markets
-                    if "BTC" in s and "USD" in s and ":" in s and len(s) < 15
-                ]
-                raise ValueError(
-                    f"SYMBOL '{SYMBOL}' not found on Delta India.\n"
-                    f"Available BTC perpetuals: {available}\n"
-                    f"Fix: update SYMBOL= in your .env"
-                )
-            logger.info(f"Symbol {SYMBOL} verified ✅")
-            fetched_markets = dict(exchange.markets)
-        finally:
-            await exchange.close()
-
-        fetch_limit = MIN_BARS + 50
-
-        if BINANCE_SIGNAL_FEED:
-            logger.info(
-                f"Loading {fetch_limit} historical bars via Binance REST "
-                f"for [{BINANCE_SYMBOL}] [{CANDLE_TIMEFRAME}]..."
-            )
-            binance_async = ccxt_async.binance({"enableRateLimit": True})
+        while self._running:
             try:
-                await binance_async.load_markets()
-                all_ohlcv = []
-                earliest_ts = None
-
-                while len(all_ohlcv) < fetch_limit:
-                    batch_size = min(fetch_limit - len(all_ohlcv), 1000)
-                    if earliest_ts is None:
-                        batch = await binance_async.fetch_ohlcv(
-                            BINANCE_SYMBOL, CANDLE_TIMEFRAME, limit=batch_size
-                        )
-                    else:
-                        go_back_ms = batch_size * self._period_ms
-                        since_ts = earliest_ts - go_back_ms
-                        batch = await binance_async.fetch_ohlcv(
-                            BINANCE_SYMBOL, CANDLE_TIMEFRAME,
-                            since=since_ts, limit=batch_size
-                        )
-                    if not batch:
-                        break
-
-                    if earliest_ts is None:
-                        all_ohlcv = batch
-                    else:
-                        cutoff = earliest_ts
-                        older = [b for b in batch if int(b[0]) < cutoff]
-                        all_ohlcv = older + all_ohlcv
-
-                    earliest_ts = int(all_ohlcv[0][0])
-                    logger.info(
-                        f"[BINANCE-SIGNAL] Fetched {len(all_ohlcv)}/{fetch_limit} bars..."
-                    )
-
-                    if len(batch) < batch_size:
-                        break 
-
-                self._df = self._to_df(all_ohlcv[-fetch_limit:])
-                logger.info(
-                    f"[BINANCE-SIGNAL] Loaded {len(self._df)} Binance bars ✅ "
-                    f"(indicators will match Pine's data source)"
+                await self._connect_and_listen()
+                # Clean exit (shouldn't happen unless server closed)
+                attempt = 0
+                reconnect_sec = _RECONNECT_SEC
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                attempt += 1
+                logger.warning(
+                    f"[FILLS] WS disconnected (attempt {attempt}): {e} — "
+                    f"reconnecting in {reconnect_sec}s"
                 )
-            finally:
-                await binance_async.close()
+                await asyncio.sleep(reconnect_sec)
+                reconnect_sec = min(reconnect_sec * 2, _MAX_RECONNECT)
 
-            self._binance_exchange = ccxt.binance({"enableRateLimit": True})
-            self._binance_exchange.markets = dict(binance_async.markets)
-        else:
-            logger.info(
-                f"Loading {fetch_limit} historical bars via Delta REST "
-                f"for [{SYMBOL}] [{CANDLE_TIMEFRAME}]..."
-            )
-            delta_async = ccxt_async.delta(delta_params)
-            try:
-                await delta_async.load_markets()
-                ohlcv = await delta_async.fetch_ohlcv(
-                    SYMBOL, CANDLE_TIMEFRAME, limit=fetch_limit
-                )
-                self._df = self._to_df(ohlcv)
-            finally:
-                await delta_async.close()
-
-            self._binance_exchange = None
-
-        self._exchange = ccxt.delta({
-            "apiKey"         : DELTA_API_KEY,
-            "secret"         : DELTA_API_SECRET,
-            "enableRateLimit": True,
-            "urls": {"api": {"public": base_url, "private": base_url}},
-        })
-        self._exchange.markets = fetched_markets
-
-        if len(self._df) >= 2:
-            last_closed_ts = int(self._df.iloc[-2]["timestamp"])
-            self._df = self._df.iloc[:-1].copy()
-        else:
-            last_closed_ts = int(self._df.iloc[-1]["timestamp"])
-        self._last_candle_boundary = _candle_boundary(last_closed_ts, self._period_ms)
-
-        bar_count = len(self._df)
-        logger.info(
-            f"Feed ready — {bar_count} bars loaded "
-            f"(need {MIN_BARS}, have {bar_count} — "
-            f"{'OK ✅' if bar_count >= MIN_BARS else 'WARN ⚠️'}) "
-            f"[source={'Binance' if BINANCE_SIGNAL_FEED else 'Delta'}]"
-        )
-
-    async def _run_websocket(self) -> None:
-        ws_url    = _WS_TESTNET if DELTA_TESTNET else _WS_LIVE
-        ws_symbol = _ccxt_to_ws_symbol(SYMBOL)
-        channel   = _timeframe_to_channel(CANDLE_TIMEFRAME)
-
-        subscribe_msg = json.dumps({
-            "type": "subscribe",
-            "payload": {
-                "channels": [
-                    {"name": channel,    "symbols": [ws_symbol]},
-                    {"name": "v2/ticker", "symbols": [ws_symbol]},
-                ]
-            }
-        })
-        heartbeat_msg = json.dumps({"type": "heartbeat"})
-
-        logger.info(
-            f"WebSocket connecting → {ws_url} | "
-            f"channels={channel},v2/ticker symbol={ws_symbol}"
-        )
+    async def _connect_and_listen(self) -> None:
+        """Single WebSocket session: auth → subscribe → process messages."""
+        ws_url = _WS_TESTNET if DELTA_TESTNET else _WS_LIVE
+        self._ws_conn = None  # FIX: clear before each new session
 
         async with websockets.connect(
             ws_url,
-            ping_interval=20,
-            ping_timeout=10,
-            close_timeout=10,
+            ping_interval = None,   # FIX: disabled — our _keepalive() manages pings
+            ping_timeout  = None,   # FIX: avoids duplicate ping conflicts
+            close_timeout = 10,
         ) as ws:
-            await ws.send(subscribe_msg)
-            logger.info("WebSocket subscribed ✅")
-            self._ws_failures = 0
-            self._msg_count   = 0
-            last_heartbeat    = time.time()
+            self._ws_conn = ws      # FIX: expose to keepalive task
+            # ── Authenticate ──────────────────────────────────────────────────
+            ts  = str(int(time.time()))
+            sig = _make_auth_signature(ts)
+            auth_msg = json.dumps({
+                "type": "auth",
+                "payload": {
+                    "api-key":   DELTA_API_KEY,
+                    "signature": sig,
+                    "timestamp": ts,
+                }
+            })
+            await ws.send(auth_msg)
+            logger.info("[FILLS] WS auth sent — waiting for confirmation...")
 
+            # Delta recommends v2/user_trades for lower latency. Its compact
+            # payload includes position-after-fill (po), which lets us confirm
+            # a complete close without guessing from order_type fields.
+            sub_msg = json.dumps({
+                "type": "subscribe",
+                "payload": {
+                    "channels": [
+                        {"name": "v2/user_trades", "symbols": [self._ws_symbol]}
+                    ]
+                }
+            })
+            await ws.send(sub_msg)
+            logger.info(
+                f"[FILLS] Subscribed to v2/user_trades | symbol={self._ws_symbol}"
+            )
+
+            # ── Message loop ──────────────────────────────────────────────────
             async for raw in ws:
-                now = time.time()
-                if now - last_heartbeat >= _WS_HEARTBEAT_SEC:
-                    await ws.send(heartbeat_msg)
-                    last_heartbeat = now
-
+                if not self._running:
+                    break
                 try:
                     msg = json.loads(raw)
                 except json.JSONDecodeError:
@@ -299,272 +259,124 @@ class CandleFeed:
 
                 msg_type = msg.get("type", "")
 
-                self._msg_count += 1
-                if self._msg_count <= 10 and msg_type not in (
-                    channel, "v2/ticker", "subscriptions", "heartbeat"
-                ):
-                    logger.debug(f"WS msg #{self._msg_count} type={msg_type!r}")
-
-                if msg_type == "v2/ticker":
-                    data = msg.get("data") or msg
-                    if data:
-                        raw_price = (
-                            data.get("mark_price") or
-                            data.get("last_price") or
-                            data.get("close") or
-                            0
-                        )
-                        try:
-                            delta_price = float(raw_price)
-                        except (TypeError, ValueError):
-                            delta_price = 0.0
-                        if delta_price > 0 and self.trail_monitor is not None:
-                            self._last_delta_tick = delta_price
-                            loop = asyncio.get_running_loop()
-                            loop.create_task(
-                                self.trail_monitor.push_delta_tick(delta_price)
-                            )
+                if msg_type == "auth":
+                    status = msg.get("status") or msg.get("result") or msg
+                    logger.info(f"[FILLS] Auth response: {status}")
                     continue
 
-                if msg_type not in (channel, f"candlestick_{CANDLE_TIMEFRAME}"):
+                if msg_type in ("subscriptions", "heartbeat", "info"):
                     continue
 
-                data = msg.get("data") or msg
-                if not data:
-                    continue
+                if msg_type in ("user_trade", "fill", "user_trades", "v2/user_trades"):
+                    await self._handle_fill(msg)
 
-                await self._process_ws_candle(data)
+    # ── Fill handler ───────────────────────────────────────────────────────────
 
-    async def _process_ws_candle(self, data: dict) -> None:
-        raw_ts = (
-            data.get("timestamp") or
-            data.get("start")     or
-            data.get("time")      or
-            data.get("candle_start_time") or
-            0
-        )
-        if not raw_ts:
+    async def _handle_fill(self, msg: dict) -> None:
+        """
+        Handle both legacy user_trades and compact v2/user_trades payloads.
+
+        We do NOT require order_type because Delta's documented user-trades
+        payload does not include it. Instead we require the close-side and a
+        confirmed flat position (po == 0, or a successful REST position check).
+        """
+        if not self._trail_mon._running or self._trail_mon._exit_fired:
             return
 
-        candle_ts_ms = _ts_to_ms(raw_ts)
+        data = msg.get("data") or msg
+        compact = str(msg.get("type") or "") == "v2/user_trades"
+        if compact:
+            symbol = str(data.get("sy") or "").upper()
+            fill_id = str(data.get("f") or "")
+            order_id = str(data.get("o") or "")
+            side = str(data.get("S") or "").lower()
+            size_raw = data.get("s")
+            price_raw = data.get("p")
+            position_after_raw = data.get("po")
+            client_oid = str(data.get("c") or "")
+        else:
+            symbol = str(data.get("symbol") or "").upper()
+            fill_id = str(data.get("fill_id") or data.get("id") or "")
+            order_id = str(data.get("order_id") or "")
+            side = str(data.get("side") or "").lower()
+            size_raw = data.get("size")
+            price_raw = data.get("fill_price") or data.get("price") or data.get("average")
+            position_after_raw = data.get("position") or data.get("position_after_fill")
+            client_oid = str(data.get("client_order_id") or "")
+
+        if symbol != self._ws_symbol:
+            return
+        if fill_id and fill_id in self._seen_fill_ids:
+            return
+        if fill_id:
+            self._seen_fill_ids.add(fill_id)
+            if len(self._seen_fill_ids) > 5000:
+                self._seen_fill_ids.clear()
+                self._seen_fill_ids.add(fill_id)
+
+        risk = getattr(self._trail_mon, "_risk", None)
+        if risk is None:
+            return
+        expected_exit_side = "sell" if risk.is_long else "buy"
+        if side != expected_exit_side:
+            # Entry/add-to-position fill or unrelated order.
+            return
 
         try:
-            o = float(data.get("open",   0))
-            h = float(data.get("high",   0))
-            l = float(data.get("low",    0))
-            c = float(data.get("close",  0))
-            v = float(data.get("volume", 0))
+            price = float(price_raw or 0.0)
+            size = abs(float(size_raw or 0.0))
         except (TypeError, ValueError):
             return
-
-        if c <= 0:
+        if price <= 0 or size <= 0:
             return
 
-        current_boundary = _candle_boundary(candle_ts_ms, self._period_ms)
+        agg_key = order_id or client_oid or fill_id or "unknown"
+        agg = self._fill_agg.setdefault(agg_key, {"size": 0.0, "weighted": 0.0})
+        agg["size"] += size
+        agg["weighted"] += size * price
+        avg_price = agg["weighted"] / agg["size"]
 
-        if current_boundary > self._last_candle_boundary:
-            if not self._df.empty:
-                try:
-                    if BINANCE_SIGNAL_FEED and self._binance_exchange is not None:
-                        closed_ohlcv = await asyncio.to_thread(
-                            self._binance_exchange.fetch_ohlcv,
-                            BINANCE_SYMBOL,
-                            CANDLE_TIMEFRAME,
-                            None,  
-                            3,     
-                        )
-                        bar_idx = -2 if len(closed_ohlcv) >= 2 else -1
-                        feed_name = "Binance"
-                    else:
-                        closed_ohlcv = await asyncio.to_thread(
-                            self._exchange.fetch_ohlcv,
-                            SYMBOL,
-                            CANDLE_TIMEFRAME,
-                            None,  
-                            3,     
-                        )
-                        bar_idx = -1
-                        feed_name = "Delta"
-
-                    if closed_ohlcv and len(closed_ohlcv) >= 1:
-                        cb  = closed_ohlcv[bar_idx]
-                        idx = self._df.index[-1]
-                        self._df.at[idx, "open"]   = float(cb[1])
-                        self._df.at[idx, "high"]   = float(cb[2])
-                        self._df.at[idx, "low"]    = float(cb[3])
-                        self._df.at[idx, "close"]  = float(cb[4])
-                        self._df.at[idx, "volume"] = float(cb[5])
-                        logger.info(
-                            f"[FEED] FIX-PEAK-REST [{feed_name}]: closed bar corrected | "
-                            f"true_high={cb[2]:.2f} true_low={cb[3]:.2f} "
-                            f"true_close={cb[4]:.2f}"
-                        )
-                        if self.trail_monitor is not None:
-                            self.trail_monitor.push_ws_candle(
-                                float(cb[2]), float(cb[3]),
-                                source = "binance" if feed_name == "Binance" else "delta",
-                            )
-                    else:
-                        logger.warning(
-                            "[FEED] FIX-PEAK-REST: REST returned < 2 bars — "
-                            "using WS-accumulated high/low (may differ from Pine)"
-                        )
-                except Exception as e:
-                    logger.warning(
-                        f"[FEED] FIX-PEAK-REST: REST fetch failed — "
-                        f"using WS-accumulated high/low: {e}"
-                    )
-
-            logger.info(
-                f"✅ Bar confirmed [WS] | "
-                f"closed_boundary={self._last_candle_boundary} | "
-                f"new_boundary={current_boundary} | "
-                f"bars={len(self._df)} — evaluating signals..."
-            )
-
-            self._last_candle_boundary = current_boundary
-
-            if self._processing:
-                logger.warning("⚠️ on_bar_close still processing — skipping this bar")
+        confirmed_flat = False
+        if position_after_raw is not None:
+            try:
+                confirmed_flat = abs(float(position_after_raw)) < 1e-12
+            except (TypeError, ValueError):
+                confirmed_flat = False
+        else:
+            # Legacy payload: confirm with the real-time position endpoint.
+            try:
+                confirmed_flat = (await self._order_mgr.fetch_open_position()) is None
+            except Exception as exc:
+                logger.warning(
+                    f"[FILLS] Closing-side fill received but position check UNKNOWN: {exc}"
+                )
                 return
 
-            if len(self._df) >= MIN_BARS:
-                self._processing = True
-                try:
-                    await self.on_bar_close(self._df.copy())
-                finally:
-                    self._processing = False
-            else:
-                logger.warning(f"⚠️ Bar skipped — only {len(self._df)} bars (need {MIN_BARS}).")
-
-            new_row = pd.DataFrame([{
-                "timestamp": candle_ts_ms,
-                "open": o, "high": h, "low": l, "close": c, "volume": v,
-            }])
-            self._df = pd.concat(
-                [self._df, new_row], ignore_index=True
-            ).tail(MIN_BARS + 50)
-            self._last_candle_boundary = current_boundary
-
-        else:
-            if not BINANCE_SIGNAL_FEED and not self._df.empty:
-                idx = self._df.index[-1]
-                self._df.at[idx, "open"]   = o
-                self._df.at[idx, "high"]   = h
-                self._df.at[idx, "low"]    = l
-                self._df.at[idx, "close"]  = c
-                self._df.at[idx, "volume"] = v
-
-            if self.trail_monitor is not None and TRAIL_EXIT_FROM_DELTA_WS:
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self.trail_monitor.on_price_tick(c, source="delta")
-                )
-                self.trail_monitor.push_ws_candle(h, l, source="delta")
-
-            if self.trail_monitor is not None:
-                self._last_delta_tick = c   
-                loop = asyncio.get_running_loop()
-                loop.create_task(
-                    self.trail_monitor.push_delta_tick(c)
-                )
-
-    async def _poll_rest_once(self) -> None:
-        sleep_sec = 5
-        await asyncio.sleep(sleep_sec)
-
-        if BINANCE_SIGNAL_FEED and self._binance_exchange is not None:
-            ohlcv = await asyncio.to_thread(
-                self._binance_exchange.fetch_ohlcv,
-                BINANCE_SYMBOL,
-                CANDLE_TIMEFRAME,
-                None, 5,
+        if not confirmed_flat:
+            logger.info(
+                f"[FILLS] Partial closing fill | order={order_id} size={size:g} "
+                f"avg={avg_price:.2f}; position still open"
             )
-        else:
-            ohlcv = await asyncio.to_thread(
-                self._exchange.fetch_ohlcv,
-                SYMBOL,
-                CANDLE_TIMEFRAME,
-                None, 5,
-            )
-
-        if not ohlcv or len(ohlcv) < 2:
             return
 
-        live_bar      = ohlcv[-1]
-        live_ts       = int(live_bar[0])
-        live_boundary = _candle_boundary(live_ts, self._period_ms)
-
-        if live_boundary > self._last_candle_boundary:
-            if not self._df.empty and len(ohlcv) >= 2:
-                try:
-                    cb  = ohlcv[-2]   
-                    idx = self._df.index[-1]
-                    self._df.at[idx, "open"]   = float(cb[1])
-                    self._df.at[idx, "high"]   = float(cb[2])
-                    self._df.at[idx, "low"]    = float(cb[3])
-                    self._df.at[idx, "close"]  = float(cb[4])
-                    self._df.at[idx, "volume"] = float(cb[5])
-                    logger.info(
-                        f"[FEED] FIX-PEAK-REST (REST path): closed bar corrected | "
-                        f"true_high={cb[2]:.2f} true_low={cb[3]:.2f} true_close={cb[4]:.2f}"
-                    )
-                    if self.trail_monitor is not None:
-                        self.trail_monitor.push_ws_candle(
-                            float(cb[2]), float(cb[3]),
-                            source = "binance" if (
-                                BINANCE_SIGNAL_FEED and self._binance_exchange is not None
-                            ) else "delta",
-                        )
-                except Exception as e:
-                    logger.warning(f"[FEED] FIX-PEAK-REST (REST path) failed: {e}")
-
-            if len(self._df) >= MIN_BARS and not self._processing:
-                logger.info(
-                    f"✅ Bar confirmed [REST fallback] | "
-                    f"prev_boundary={self._last_candle_boundary} | "
-                    f"new_boundary={live_boundary}"
-                )
-                self._processing = True
-                try:
-                    await self.on_bar_close(self._df.copy())
-                finally:
-                    self._processing = False
-            else:
-                logger.warning(
-                    f"⚠️ Bar skipped — only {len(self._df)} bars (need {MIN_BARS}) "
-                    f"or still processing."
-                )
-
-            new_row = pd.DataFrame([{
-                "timestamp": live_ts,
-                "open"  : float(live_bar[1]),
-                "high"  : float(live_bar[2]),
-                "low"   : float(live_bar[3]),
-                "close" : float(live_bar[4]),
-                "volume": float(live_bar[5]),
-            }])
-            self._df = pd.concat(
-                [self._df, new_row], ignore_index=True
-            ).tail(MIN_BARS + 50)
-            self._last_candle_boundary = live_boundary
-
+        bracket_id = str(getattr(self._order_mgr, "_bracket_order_id", None) or "")
+        if bracket_id and order_id == bracket_id:
+            reason = "Bracket SL (exchange-side)"
         else:
-            if not self._df.empty:
-                idx = self._df.index[-1]
-                self._df.at[idx, "open"]   = float(live_bar[1])
-                self._df.at[idx, "high"]   = float(live_bar[2])
-                self._df.at[idx, "low"]    = float(live_bar[3])
-                self._df.at[idx, "close"]  = float(live_bar[4])
-                self._df.at[idx, "volume"] = float(live_bar[5])
+            reason = "Exchange close fill"
 
-    @staticmethod
-    def _to_df(ohlcv: list) -> pd.DataFrame:
-        df = pd.DataFrame(
-            ohlcv,
-            columns=["timestamp", "open", "high", "low", "close", "volume"]
+        logger.info(
+            f"[FILLS] Confirmed flat from fill WS | order={order_id} side={side} "
+            f"size={agg['size']:g} avg_fill={avg_price:.2f} reason={reason}"
         )
-        return df.astype({
-            "open": float, "high": float,
-            "low": float, "close": float, "volume": float,
-        })
+        self._order_mgr._bracket_active = False
+        self._order_mgr._bracket_order_id = None
+        self._fill_agg.pop(agg_key, None)
+
+        await self._trail_mon._fire_exit(
+            avg_price,
+            reason,
+            source="fills_ws",
+            position_already_closed=True,
+        )
+
