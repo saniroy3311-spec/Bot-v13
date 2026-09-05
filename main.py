@@ -158,21 +158,35 @@ class BotV13:
 
         await self._order_mgr.initialize()
 
-        try:
-            existing_check = await self._order_mgr.fetch_open_position()
-            if existing_check is None:
-                await self._order_mgr.cancel_all_orders()
-                logger.info("[STARTUP] Flat on Delta — cancelled all stale bracket orders (clean slate)")
-        except Exception as e:
-            logger.warning(f"[STARTUP] Bracket cleanup failed (non-fatal): {e}")
+        # Safe startup reconciliation: API failure must NEVER mean FLAT.
+        pos_state, existing = await self._order_mgr.fetch_position_state()
+        self._position_unknown = (pos_state == "UNKNOWN")
 
-        # ── Startup recovery: adopt any pre-existing open position ─────────────
-        existing = await self._order_mgr.fetch_open_position()
+        if pos_state == "FLAT":
+            try:
+                await self._order_mgr.cancel_all_orders()
+                logger.info(
+                    "[STARTUP] Delta confirmed FLAT - cancelled stale bracket orders"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[STARTUP] Bracket cleanup failed (non-fatal): {e}"
+                )
+
+        elif pos_state == "UNKNOWN":
+            logger.error(
+                "[STARTUP] Position state UNKNOWN - NOT cancelling orders, "
+                "NOT clearing trade state, and blocking new entries."
+            )
+
+        elif pos_state == "OPEN":
+            logger.info("[STARTUP] Delta confirmed OPEN position.")
+
         
         # FIX: Validate local database vs actual exchange reality
         try:
             open_row = self._journal.get_open_trade()
-            if open_row and not existing:
+            if open_row and pos_state == "FLAT":
                 logger.info("[STARTUP] Database ghost row detected but Delta Exchange is FLAT. Purging local trade memory.")
                 self._journal.clear_open_trade()
         except Exception as je:

@@ -345,7 +345,8 @@ class FillsFeed:
         else:
             # Legacy payload: confirm with the real-time position endpoint.
             try:
-                confirmed_flat = (await self._order_mgr.fetch_open_position()) is None
+                pos_state, _ = await self._order_mgr.fetch_position_state()
+                confirmed_flat = (pos_state == "FLAT")
             except Exception as exc:
                 logger.warning(
                     f"[FILLS] Closing-side fill received but position check UNKNOWN: {exc}"
