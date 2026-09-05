@@ -92,9 +92,10 @@ import time
 from typing import Callable, Optional
 
 from config import (
-    TRAIL_STAGES, BE_MULT, MAX_SL_MULT, MAX_SL_POINTS,
+    TRAIL_STAGES, BE_MULT, MAX_SL_MULT, MIN_SL_POINTS, MAX_SL_POINTS,
     TRAIL_LOOP_SEC, TRAIL_SL_PRE_FIRE_BUFFER,
     CANDLE_TIMEFRAME, TIME_EXIT_MINUTES, PINE_MINTICK,
+    SL_CONFIRM_MS, BAR_CLOSE_SL_EVAL,
     TREND_ATR_MULT, RANGE_ATR_MULT,
     TRAIL_OFFSET_FLOOR_MULT,
     TRAIL_FIRE_SL_ON_CANDLE_EXTREME,
@@ -239,6 +240,7 @@ class TrailMonitor:
 
         # FIX-5: Once trail ever arms, offset recalibration is permanently frozen.
         self._trail_ever_armed  : bool = False
+        self._initial_sl_breach_started_ms: int = 0
 
     # ── Start / Stop ──────────────────────────────────────────────────────────
 
@@ -277,6 +279,7 @@ class TrailMonitor:
 
         # FIX-5: Reset arm-freeze flag for the new trade
         self._trail_ever_armed = False
+        self._initial_sl_breach_started_ms = 0
 
         self._entry_bar_end_ms = (
             (entry_bar_time_ms // BAR_PERIOD_MS) * BAR_PERIOD_MS
@@ -360,8 +363,10 @@ class TrailMonitor:
         # Only when trail not yet armed — once trail arms, current_sl is trail SL
         if not getattr(state, 'trail_armed', False) and not state.be_done:
             _atr_mult  = TREND_ATR_MULT if risk.is_trend else RANGE_ATR_MULT
-            _stop_dist = min(atr * _atr_mult, MAX_SL_POINTS)
-            _anchor    = risk.signal_close if risk.signal_close > 0 else entry_price
+            _stop_dist = max(MIN_SL_POINTS, min(atr * _atr_mult, MAX_SL_POINTS))
+            # Keep risk anchored to the confirmed exchange fill. Returning to
+            # signal_close here would undo the fill-price correction made at entry.
+            _anchor    = entry_price
             _new_sl    = (_anchor - _stop_dist) if is_long else (_anchor + _stop_dist)
             if abs(_new_sl - state.current_sl) > 0.01:
                 logger.info(
@@ -423,6 +428,10 @@ class TrailMonitor:
 
         tp_hit = (bar_high >= risk.tp)      if is_long else (bar_low  <= risk.tp)
         sl_hit = (bar_low  <= pre_trail_sl) if is_long else (bar_high >= pre_trail_sl)
+        if not getattr(state, 'trail_armed', False) and not BAR_CLOSE_SL_EVAL:
+            # Initial SL is handled from live ticks when bar-close SL evaluation
+            # is disabled. This prevents a stale candle extreme from inventing an exit.
+            sl_hit = False
 
         if tp_hit or sl_hit:
             if tp_hit and sl_hit:
@@ -569,6 +578,20 @@ class TrailMonitor:
                 logger.error(f"[TRAIL] Tick loop error: {e}", exc_info=True)
                 await asyncio.sleep(1.0)
 
+    def _initial_sl_confirmed(self, price: float, is_long: bool, sl: float) -> bool:
+        """Require an Initial-SL breach to persist for SL_CONFIRM_MS."""
+        breached = (price <= sl + TRAIL_SL_PRE_FIRE_BUFFER) if is_long else (price >= sl - TRAIL_SL_PRE_FIRE_BUFFER)
+        if not breached:
+            self._initial_sl_breach_started_ms = 0
+            return False
+        if SL_CONFIRM_MS <= 0:
+            return True
+        now_ms = int(time.time() * 1000)
+        if self._initial_sl_breach_started_ms <= 0:
+            self._initial_sl_breach_started_ms = now_ms
+            return False
+        return (now_ms - self._initial_sl_breach_started_ms) >= SL_CONFIRM_MS
+
     # ── Core tick evaluator — Pine trail engine ────────────────────────────────
 
     async def _evaluate_tick(self, price: float) -> None:
@@ -631,10 +654,13 @@ class TrailMonitor:
                 )
             else:
                 # Trail not armed — check initial / BE SL only
-                sl_hit = (
-                    (price <= state.current_sl + TRAIL_SL_PRE_FIRE_BUFFER) if is_long
-                    else (price >= state.current_sl - TRAIL_SL_PRE_FIRE_BUFFER)
-                )
+                if state.be_done:
+                    sl_hit = (
+                        (price <= state.current_sl + TRAIL_SL_PRE_FIRE_BUFFER) if is_long
+                        else (price >= state.current_sl - TRAIL_SL_PRE_FIRE_BUFFER)
+                    )
+                else:
+                    sl_hit = self._initial_sl_confirmed(price, is_long, state.current_sl)
                 if sl_hit:
                     reason = "Breakeven SL" if state.be_done else "Initial SL"
                     await self._fire_exit(price, reason, source="tick")
@@ -643,7 +669,7 @@ class TrailMonitor:
                 # Max SL check (entry bar exempt)
                 if not state.max_sl_fired:
                     entry_bar_over = (time.time() * 1000) >= self._entry_bar_end_ms
-                    max_thresh     = min(atr * MAX_SL_MULT, MAX_SL_POINTS)
+                    max_thresh     = max(MIN_SL_POINTS, min(atr * MAX_SL_MULT, MAX_SL_POINTS))
                     if entry_bar_over:
                         if is_long  and price <= entry_price - max_thresh:
                             state.max_sl_fired = True
@@ -691,7 +717,7 @@ class TrailMonitor:
         # ── 6. Max SL (entry bar exempt) ─────────────────────────────────────
         if not state.max_sl_fired:
             entry_bar_over = (time.time() * 1000) >= self._entry_bar_end_ms
-            max_thresh     = min(atr * MAX_SL_MULT, MAX_SL_POINTS)
+            max_thresh     = max(MIN_SL_POINTS, min(atr * MAX_SL_MULT, MAX_SL_POINTS))
             if entry_bar_over:
                 if is_long  and price <= entry_price - max_thresh:
                     state.max_sl_fired = True
@@ -763,7 +789,7 @@ class TrailMonitor:
         # ── 3. Max SL (entry bar exempt) ─────────────────────────────────────
         if not state.max_sl_fired:
             entry_bar_over = (time.time() * 1000) >= self._entry_bar_end_ms
-            max_thresh     = min(atr * MAX_SL_MULT, MAX_SL_POINTS)
+            max_thresh     = max(MIN_SL_POINTS, min(atr * MAX_SL_MULT, MAX_SL_POINTS))
             if entry_bar_over:
                 if is_long  and price <= entry_price - max_thresh:
                     state.max_sl_fired = True
@@ -887,56 +913,91 @@ class TrailMonitor:
 
     # ── Exit helper ───────────────────────────────────────────────────────────
 
-    async def _fire_exit(self, exit_price: float, reason: str, source: str = "tick") -> None:
-        """Fire exit once. Idempotent."""
+    async def _fire_exit(
+        self,
+        exit_price: float,
+        reason: str,
+        source: str = "tick",
+        position_already_closed: bool = False,
+    ) -> None:
+        """
+        Fire an exit once, but only declare success after the exchange confirms
+        the position is flat. Failed close attempts leave the monitor running
+        and the exchange-side emergency bracket untouched.
+        """
         if self._exit_fired:
             return
         self._exit_fired = True
 
         logger.info(
             f"[TRAIL] Exit fired: reason={reason} price={exit_price:.2f} "
-            f"source={source} atr={self._current_atr:.2f}"
+            f"source={source} atr={self._current_atr:.2f} "
+            f"already_closed={position_already_closed}"
         )
-
-        try:
-            await self._order_mgr.cancel_all_orders()
-        except Exception as e:
-            logger.warning(f"[TRAIL] cancel_all_orders failed: {e}")
-
         is_long = self._risk.is_long if self._risk else True
-
-        MAX_ATTEMPTS = 3
-        success = False
-        actual_fill_price: Optional[float] = None
+        actual_fill_price: Optional[float] = float(exit_price) if position_already_closed and exit_price > 0 else None
+        success = bool(position_already_closed)
+        already_closed = bool(position_already_closed)
         last_err: Optional[Exception] = None
 
-        for attempt in range(1, MAX_ATTEMPTS + 1):
-            try:
-                result = await self._order_mgr.close_position(is_long=is_long, reason=reason)
-                success = True
-                if isinstance(result, dict):
-                    fill = result.get("average") or result.get("price")
+        if not position_already_closed:
+            max_attempts = 3
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    result = await self._order_mgr.close_position(is_long=is_long, reason=reason)
+                    info = result.get("info") if isinstance(result, dict) else None
+                    already_closed = info == "already_closed"
+                    fill = (result.get("average") or result.get("price")) if isinstance(result, dict) else None
                     if fill and float(fill) > 0:
                         actual_fill_price = float(fill)
-                    logger.info(f"[TRAIL] Exit order placed (attempt {attempt}) fill={actual_fill_price}")
-                break
-            except Exception as e:
-                last_err = e
-                logger.warning(f"[TRAIL] close_position attempt {attempt}/{MAX_ATTEMPTS}: {e}")
-                if attempt < MAX_ATTEMPTS:
-                    await asyncio.sleep(0.5 * attempt)
+                    success = True
+                    break
+                except Exception as e:
+                    last_err = e
+                    logger.warning(f"[TRAIL] close_position attempt {attempt}/{max_attempts}: {e}")
+                    if attempt < max_attempts:
+                        await asyncio.sleep(0.75 * attempt)
 
         if not success:
-            logger.error(
-                f"[TRAIL] close_position FAILED after {MAX_ATTEMPTS} attempts "
-                f"(last: {last_err}). ⚠️ MANUAL CHECK REQUIRED."
+            self._exit_fired = False
+            logger.critical(
+                f"[TRAIL] EXIT NOT CONFIRMED after retries (last={last_err}). "
+                "Monitor remains active and emergency bracket remains protective."
             )
+            if self._telegram is not None:
+                try:
+                    await self._telegram.send(
+                        "🚨 <b>EXIT NOT CONFIRMED</b>\n"
+                        "Delta position could not be confirmed flat. Bot is still managing the trade.\n"
+                        "Check the exchange immediately."
+                    )
+                except Exception:
+                    pass
+            return
 
-        reported_price = actual_fill_price if actual_fill_price is not None else exit_price
-        if actual_fill_price is not None and abs(actual_fill_price - exit_price) > 1.0:
-            logger.info(
-                f"[TRAIL] Fill correction: signal={exit_price:.2f} "
-                f"actual={actual_fill_price:.2f} diff={actual_fill_price - exit_price:+.2f}"
+        # If another mechanism (usually the emergency bracket) already closed
+        # the position, recover the real execution from fill history. Never use
+        # the trigger/SL level as a substitute for an exchange fill.
+        if actual_fill_price is None and self._order_mgr is not None:
+            try:
+                recent = await self._order_mgr.fetch_latest_exit_fill(
+                    is_long=is_long,
+                    since_us=(self._entry_wall_ms * 1000) if self._entry_wall_ms else None,
+                    # If the position was already flat, the closing fill may have
+                    # come from the emergency bracket rather than our last manual
+                    # close id. Search the trade window and prefer fills ending flat.
+                    order_id=None,
+                )
+                if recent and float(recent.get("price") or 0) > 0:
+                    actual_fill_price = float(recent["price"])
+            except Exception as e:
+                logger.warning(f"[TRAIL] Could not recover verified exit fill: {e}")
+
+        reported_price = actual_fill_price if actual_fill_price is not None else 0.0
+        if reported_price <= 0:
+            logger.critical(
+                "[TRAIL] Position is confirmed closed but exit fill price is UNKNOWN. "
+                "No synthetic stop/trigger price will be recorded."
             )
 
         self._running = False
@@ -944,9 +1005,9 @@ class TrailMonitor:
             try:
                 await self._on_exit_cb(
                     reported_price,
-                    reason,
+                    reason if reported_price > 0 else f"{reason} (fill unconfirmed)",
                     source,
-                    True,   # position_already_closed
+                    True,
                 )
             except Exception as e:
                 logger.error(f"[TRAIL] exit callback error: {e}", exc_info=True)
