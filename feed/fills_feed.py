@@ -123,6 +123,8 @@ class FillsFeed:
         self._ws_symbol  = _ws_symbol(SYMBOL)
         self._ws_conn    = None                           # FIX: hold current ws ref
         self._PING_INTERVAL = 20                          # FIX: ping every 20s
+        self._seen_fill_ids: set[str] = set()
+        self._fill_agg: dict[str, dict[str, float]] = {}
 
     # ── Lifecycle ──────────────────────────────────────────────────────────────
 
@@ -230,18 +232,20 @@ class FillsFeed:
             await ws.send(auth_msg)
             logger.info("[FILLS] WS auth sent — waiting for confirmation...")
 
-            # ── Subscribe to user_trades ───────────────────────────────────────
+            # Delta recommends v2/user_trades for lower latency. Its compact
+            # payload includes position-after-fill (po), which lets us confirm
+            # a complete close without guessing from order_type fields.
             sub_msg = json.dumps({
                 "type": "subscribe",
                 "payload": {
                     "channels": [
-                        {"name": "user_trades", "symbols": [self._ws_symbol]}
+                        {"name": "v2/user_trades", "symbols": [self._ws_symbol]}
                     ]
                 }
             })
             await ws.send(sub_msg)
             logger.info(
-                f"[FILLS] Subscribed to user_trades | symbol={self._ws_symbol}"
+                f"[FILLS] Subscribed to v2/user_trades | symbol={self._ws_symbol}"
             )
 
             # ── Message loop ──────────────────────────────────────────────────
@@ -263,86 +267,116 @@ class FillsFeed:
                 if msg_type in ("subscriptions", "heartbeat", "info"):
                     continue
 
-                # Delta sends fill events as type="user_trade" or "fill"
-                if msg_type in ("user_trade", "fill", "user_trades"):
+                if msg_type in ("user_trade", "fill", "user_trades", "v2/user_trades"):
                     await self._handle_fill(msg)
 
     # ── Fill handler ───────────────────────────────────────────────────────────
 
     async def _handle_fill(self, msg: dict) -> None:
         """
-        Process a fill event from the user_trades channel.
+        Handle both legacy user_trades and compact v2/user_trades payloads.
 
-        Only acts if:
-          1. We are currently in a position (trail monitor running)
-          2. The fill is for our symbol
-          3. The order type is a bracket leg (stop_loss or take_profit)
-          4. Exit hasn't fired yet
+        We do NOT require order_type because Delta's documented user-trades
+        payload does not include it. Instead we require the close-side and a
+        confirmed flat position (po == 0, or a successful REST position check).
         """
-        # Guard: only process if we have an active trail
         if not self._trail_mon._running or self._trail_mon._exit_fired:
             return
 
-        # Symbol check
-        fill_symbol = (
-            msg.get("symbol") or
-            (msg.get("data") or {}).get("symbol") or
-            ""
-        ).upper()
-        if fill_symbol != self._ws_symbol:
-            return
-
-        # Extract order type
         data = msg.get("data") or msg
-        order_type = (
-            data.get("order_type") or
-            data.get("stop_order_type") or
-            ""
-        ).lower().strip()
+        compact = str(msg.get("type") or "") == "v2/user_trades"
+        if compact:
+            symbol = str(data.get("sy") or "").upper()
+            fill_id = str(data.get("f") or "")
+            order_id = str(data.get("o") or "")
+            side = str(data.get("S") or "").lower()
+            size_raw = data.get("s")
+            price_raw = data.get("p")
+            position_after_raw = data.get("po")
+            client_oid = str(data.get("c") or "")
+        else:
+            symbol = str(data.get("symbol") or "").upper()
+            fill_id = str(data.get("fill_id") or data.get("id") or "")
+            order_id = str(data.get("order_id") or "")
+            side = str(data.get("side") or "").lower()
+            size_raw = data.get("size")
+            price_raw = data.get("fill_price") or data.get("price") or data.get("average")
+            position_after_raw = data.get("position") or data.get("position_after_fill")
+            client_oid = str(data.get("client_order_id") or "")
 
-        if order_type not in _BRACKET_ORDER_TYPES:
-            # Not a bracket leg — regular fill (entry), ignore
-            logger.debug(f"[FILLS] Non-bracket fill ignored: order_type={order_type!r}")
+        if symbol != self._ws_symbol:
+            return
+        if fill_id and fill_id in self._seen_fill_ids:
+            return
+        if fill_id:
+            self._seen_fill_ids.add(fill_id)
+            if len(self._seen_fill_ids) > 5000:
+                self._seen_fill_ids.clear()
+                self._seen_fill_ids.add(fill_id)
+
+        risk = getattr(self._trail_mon, "_risk", None)
+        if risk is None:
+            return
+        expected_exit_side = "sell" if risk.is_long else "buy"
+        if side != expected_exit_side:
+            # Entry/add-to-position fill or unrelated order.
             return
 
-        # Extract fill price
-        fill_price_raw = (
-            data.get("fill_price") or
-            data.get("price") or
-            data.get("average") or
-            0.0
-        )
         try:
-            fill_price = float(fill_price_raw)
+            price = float(price_raw or 0.0)
+            size = abs(float(size_raw or 0.0))
         except (TypeError, ValueError):
-            fill_price = 0.0
+            return
+        if price <= 0 or size <= 0:
+            return
 
-        # Extract fill side
-        side = (data.get("side") or "").lower()
+        agg_key = order_id or client_oid or fill_id or "unknown"
+        agg = self._fill_agg.setdefault(agg_key, {"size": 0.0, "weighted": 0.0})
+        agg["size"] += size
+        agg["weighted"] += size * price
+        avg_price = agg["weighted"] / agg["size"]
 
-        # Determine reason label
-        if order_type in _SL_ORDER_TYPES:
+        confirmed_flat = False
+        if position_after_raw is not None:
+            try:
+                confirmed_flat = abs(float(position_after_raw)) < 1e-12
+            except (TypeError, ValueError):
+                confirmed_flat = False
+        else:
+            # Legacy payload: confirm with the real-time position endpoint.
+            try:
+                confirmed_flat = (await self._order_mgr.fetch_open_position()) is None
+            except Exception as exc:
+                logger.warning(
+                    f"[FILLS] Closing-side fill received but position check UNKNOWN: {exc}"
+                )
+                return
+
+        if not confirmed_flat:
+            logger.info(
+                f"[FILLS] Partial closing fill | order={order_id} size={size:g} "
+                f"avg={avg_price:.2f}; position still open"
+            )
+            return
+
+        bracket_id = str(getattr(self._order_mgr, "_bracket_order_id", None) or "")
+        if bracket_id and order_id == bracket_id:
             reason = "Bracket SL (exchange-side)"
         else:
-            reason = "Bracket TP (exchange-side)"
+            reason = "Exchange close fill"
 
         logger.info(
-            f"[FILLS] 🎯 Bracket fill detected via WS | "
-            f"order_type={order_type} side={side} "
-            f"fill_price={fill_price:.2f} reason={reason}"
+            f"[FILLS] Confirmed flat from fill WS | order={order_id} side={side} "
+            f"size={agg['size']:g} avg_fill={avg_price:.2f} reason={reason}"
+        )
+        self._order_mgr._bracket_active = False
+        self._order_mgr._bracket_order_id = None
+        self._fill_agg.pop(agg_key, None)
+
+        await self._trail_mon._fire_exit(
+            avg_price,
+            reason,
+            source="fills_ws",
+            position_already_closed=True,
         )
 
-        # Mark bracket inactive on manager so no further update attempts
-        if self._order_mgr is not None:
-            self._order_mgr._bracket_active   = False
-            self._order_mgr._bracket_order_id = None
-
-        # Fire exit on trail monitor with actual exchange fill price
-        if not self._trail_mon._exit_fired:
-            exit_px = fill_price if fill_price > 0 else (
-                self._trail_mon._state.current_sl
-                if self._trail_mon._state else 0.0
-            )
-            asyncio.get_running_loop().create_task(
-                self._trail_mon._fire_exit(exit_px, reason, source="bracket_ws")
-            )
