@@ -58,6 +58,7 @@ from risk.calculator    import (
     RiskLevels, TrailState,
     calc_levels, recalc_levels_from_fill, calc_real_pl, calc_gross_pl,
 )
+from risk.guards        import TradeGuards          # FIX 2026-09-05
 from monitor.trail_loop import TrailMonitor
 from orders.manager     import OrderManager
 from infra.telegram            import Telegram
@@ -132,6 +133,17 @@ class BotV13:
         # Guards
         self._entry_lock  = asyncio.Lock()
         self._historical_sync_done = False  # NEW: Guard for startup phantom trades
+
+        # FIX 2026-09-05
+        # True when the exchange position query failed. Blocks all new entries.
+        self._position_unknown: bool = False
+        # Real cooldown / consecutive-loss pause / directional lockout.
+        # These .env keys existed but were read by nothing before this fix.
+        self._guards = TradeGuards()
+        try:
+            self._guards = TradeGuards.from_dict(self._journal.get_guard_state())
+        except Exception:
+            pass  # journal has no guard table yet — start from a clean slate
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -236,10 +248,35 @@ class BotV13:
     async def _on_bar_close(self, df) -> None:
         if self._in_position and not self._entry_lock.locked():
             try:
-                actual = await self._order_mgr.fetch_open_position()
-                if actual is None:
+                # FIX 2026-09-05: was fetch_open_position(), whose None meant
+                # BOTH "flat" and "the query failed". A network blip therefore
+                # stripped protection from a live position. Now UNKNOWN is
+                # handled separately and never triggers a fake exit.
+                pos_state, actual = await self._order_mgr.fetch_position_state()
+
+                if pos_state == "UNKNOWN":
+                    self._position_unknown = True
+                    logger.error(
+                        "[BAR] Position state UNKNOWN — exchange query failed. "
+                        "Keeping trail monitor RUNNING, keeping in_position=True, "
+                        "and blocking new entries until the state is confirmed."
+                    )
+                    try:
+                        await self._telegram.send(
+                            "⚠️ <b>POSITION STATE UNKNOWN</b>\n"
+                            "Exchange query failed. Protection left in place and "
+                            "new entries blocked. <b>Check your position on Delta "
+                            "manually.</b>"
+                        )
+                    except Exception:
+                        pass
+                    return
+
+                self._position_unknown = False
+
+                if pos_state == "FLAT":
                     logger.warning(
-                        "[BAR] State drift detected: in_position=True but Delta "
+                        "[BAR] State drift confirmed: in_position=True but Delta "
                         "is flat. Bracket SL/TP fired silently — recovering exit."
                     )
                     exit_price: float
@@ -393,6 +430,31 @@ class BotV13:
 
         logger.info(f"[SIGNAL] {sig.signal_type.value}  is_long={sig.is_long}  regime={sig.regime}")
 
+        # ══════════════════════════════════════════════════════════════════════
+        # FIX 2026-09-05 — ENTRY GUARDS (none of this existed before)
+        # ══════════════════════════════════════════════════════════════════════
+        if self._position_unknown:
+            logger.error("[GUARD] Entry blocked — position state is UNKNOWN.")
+            return
+
+        allowed, why = self._guards.can_enter(sig.is_long)
+        if not allowed:
+            logger.info(f"[GUARD] Entry blocked — {why}")
+            return
+
+        # Reject setups whose stop is below MIN_SL_POINTS instead of sending a
+        # noise-width bracket to the exchange. calc_levels() sets .rejected.
+        _probe = calc_levels(
+            entry_price  = snap.close,
+            atr          = snap.atr,
+            is_long      = sig.is_long,
+            is_trend     = sig.is_trend,
+            signal_close = snap.close,
+        )
+        if getattr(_probe, "rejected", False):
+            logger.info(f"[GUARD] Entry blocked — {_probe.reject_reason}")
+            return
+
         # ── 4. Place entry ─────────────────────────────────────────────────────
         if self._entry_lock.locked():
             return
@@ -497,6 +559,8 @@ class BotV13:
 
             await self._telegram.notify_entry(
                 signal_type = sig.signal_type.value,
+                is_long     = sig.is_long,      # FIX 2026-09-05 — was missing,
+                                                # so every alert printed "LONG"
                 entry_price = fill,
                 sl          = risk.sl,
                 tp          = risk.tp,
@@ -541,6 +605,18 @@ class BotV13:
                 self._journal.close_open_trade()
         except Exception as e:
             logger.warning(f"[JOURNAL] log_trade failed: {e}")
+
+        # FIX 2026-09-05 — feed the result into the anti-streak guards so a
+        # losing streak actually pauses the bot instead of re-entering after
+        # one second, as it did repeatedly on 2026-09-04.
+        try:
+            self._guards.record_exit(
+                is_long = risk.is_long if risk else True,
+                pnl     = pl,
+            )
+            self._journal.save_guard_state(self._guards.to_dict())
+        except Exception as ge:
+            logger.warning(f"[GUARD] record_exit failed: {ge}")
 
         try:
             await self._telegram.notify_exit(
