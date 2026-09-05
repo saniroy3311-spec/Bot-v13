@@ -139,6 +139,44 @@ class Journal:
 
     # ── Open-trade lifecycle ──────────────────────────────────────────────────────────
 
+    # ── FIX 2026-09-05: persist anti-streak guard state ───────────────────────
+    # Without this, restarting the bot wipes an active loss pause and it can
+    # immediately resume trading into the same losing streak.
+
+    def _ensure_guard_table(self):
+        c = self._conn.cursor()
+        c.execute(
+            "CREATE TABLE IF NOT EXISTS guard_state (id INTEGER PRIMARY KEY "
+            "CHECK (id = 1), payload TEXT NOT NULL)"
+        )
+        self._conn.commit()
+
+    def save_guard_state(self, payload: dict) -> None:
+        import json
+        try:
+            self._ensure_guard_table()
+            c = self._conn.cursor()
+            c.execute(
+                "INSERT INTO guard_state (id, payload) VALUES (1, ?) "
+                "ON CONFLICT(id) DO UPDATE SET payload = excluded.payload",
+                (json.dumps(payload),),
+            )
+            self._conn.commit()
+        except Exception as e:
+            logger.warning(f"[JOURNAL] save_guard_state failed: {e}")
+
+    def get_guard_state(self) -> dict:
+        import json
+        try:
+            self._ensure_guard_table()
+            c = self._conn.cursor()
+            c.execute("SELECT payload FROM guard_state WHERE id = 1")
+            row = c.fetchone()
+            return json.loads(row[0]) if row else {}
+        except Exception as e:
+            logger.warning(f"[JOURNAL] get_guard_state failed: {e}")
+            return {}
+
     def open_trade(self, signal_type, is_long, entry_price, sl, tp, atr, qty):
         try:
             ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
