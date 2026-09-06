@@ -511,7 +511,7 @@ def evaluate(snap: IndicatorSnapshot, has_position: bool = False) -> Signal:
 
 # ─── Risk level calculation ────────────────────────────────────────────────────
 
-def calc_levels(entry_price: float, atr: float, is_long: bool, is_trend: bool) -> RiskLevels:
+def calc_levels(entry_price: float, atr: float, is_long: bool, is_trend: bool, signal_close: float = 0.0, entry_bar_open: float = None, *args, **kwargs) -> RiskLevels:
     """
     Compute SL and TP from entry price + ATR.
 

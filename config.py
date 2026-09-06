@@ -407,3 +407,5 @@ PINE_TICK_TRUNCATE = os.environ.get("PINE_TICK_TRUNCATE", "true").lower() == "tr
 MAX_EXIT_SLIPPAGE_ATR_PCT = float(os.environ.get("MAX_EXIT_SLIPPAGE_ATR_PCT", "18.0"))
 
 DELTA_TICK_DIVERGENCE_WARN_PTS = float(os.environ.get("DELTA_TICK_DIVERGENCE_WARN_PTS", "10.0"))
+
+MIN_SL_ACTION = os.environ.get("MIN_SL_ACTION", "widen").strip().lower()
