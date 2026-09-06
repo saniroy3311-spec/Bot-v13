@@ -47,7 +47,7 @@ from typing import Optional
 # ── Canonical module imports ───────────────────────────────────────────────────
 from config import (
     SYMBOL, POSITION_BTC_SIZE, CANDLE_TIMEFRAME, FILTER_VOL_ENABLED,
-    POSITION_BTC_SIZE, TREND_ATR_MULT, RANGE_ATR_MULT,
+    POSITION_BTC_SIZE, TREND_ATR_MULT, RANGE_ATR_MULT, DRY_RUN,
 )
 from feed.ws_feed            import CandleFeed
 from feed.binance_price_feed import BinancePriceFeed
@@ -260,7 +260,10 @@ class BotV13:
         logger.info("Feed ready — waiting for first bar close...")
 
     async def _on_bar_close(self, df) -> None:
-        if self._in_position and not self._entry_lock.locked():
+        # FIX 2026-09-06: skip drift-check in DRY_RUN — paper trades never
+        # touch the exchange, so Delta is ALWAYS flat for them; this check
+        # was force-killing every paper trade after 1 bar.
+        if self._in_position and not self._entry_lock.locked() and not DRY_RUN:
             try:
                 # FIX 2026-09-05: was fetch_open_position(), whose None meant
                 # BOTH "flat" and "the query failed". A network blip therefore
