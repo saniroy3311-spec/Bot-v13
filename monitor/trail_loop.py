@@ -92,7 +92,7 @@ import time
 from typing import Callable, Optional
 
 from config import (
-    TRAIL_STAGES, BE_MULT, MAX_SL_MULT, MIN_SL_POINTS, MAX_SL_POINTS,
+    TRAIL_STAGES, BE_MULT, MAX_SL_MULT, MIN_SL_POINTS, MAX_SL_POINTS, TP_HARD_EXIT,
     TRAIL_LOOP_SEC, TRAIL_SL_PRE_FIRE_BUFFER,
     CANDLE_TIMEFRAME, TIME_EXIT_MINUTES, PINE_MINTICK,
     SL_CONFIRM_MS, BAR_CLOSE_SL_EVAL,
@@ -426,7 +426,7 @@ class TrailMonitor:
         if is_entry_bar:
             return
 
-        tp_hit = (bar_high >= risk.tp)      if is_long else (bar_low  <= risk.tp)
+        tp_hit = ((bar_high >= risk.tp) if is_long else (bar_low <= risk.tp)) if TP_HARD_EXIT else False
         sl_hit = (bar_low  <= pre_trail_sl) if is_long else (bar_high >= pre_trail_sl)
         if not getattr(state, 'trail_armed', False) and not BAR_CLOSE_SL_EVAL:
             # Initial SL is handled from live ticks when bar-close SL evaluation
@@ -623,13 +623,14 @@ class TrailMonitor:
         entry_price = risk.entry_price
         atr         = self._current_atr
 
-        # ── 1. TP hit ─────────────────────────────────────────────────────────
-        if is_long and price >= risk.tp:
-            await self._fire_exit(risk.tp, "TP", source="tick")
-            return
-        if not is_long and price <= risk.tp:
-            await self._fire_exit(risk.tp, "TP", source="tick")
-            return
+        # ── 1. TP hit (Gated by TP_HARD_EXIT) ──────────────────────────────────
+        if TP_HARD_EXIT:
+            if is_long and price >= risk.tp:
+                await self._fire_exit(risk.tp, "TP", source="tick")
+                return
+            if not is_long and price <= risk.tp:
+                await self._fire_exit(risk.tp, "TP", source="tick")
+                return
 
         # ── 2. Trail arm or initial SL ────────────────────────────────────────
         if not getattr(state, 'trail_armed', False):
@@ -758,13 +759,14 @@ class TrailMonitor:
         entry_price = risk.entry_price
         atr         = self._current_atr
 
-        # ── 1. TP hit ─────────────────────────────────────────────────────────
-        if is_long and price >= risk.tp:
-            await self._fire_exit(risk.tp, "TP", source="tick")
-            return
-        if not is_long and price <= risk.tp:
-            await self._fire_exit(risk.tp, "TP", source="tick")
-            return
+        # ── 1. TP hit (Gated by TP_HARD_EXIT) ──────────────────────────────────
+        if TP_HARD_EXIT:
+            if is_long and price >= risk.tp:
+                await self._fire_exit(risk.tp, "TP", source="tick")
+                return
+            if not is_long and price <= risk.tp:
+                await self._fire_exit(risk.tp, "TP", source="tick")
+                return
 
         # ── 2. Trail SL hit check (using current_sl already set by Delta ticks) ──
         sl_hit = (
