@@ -1,3 +1,4 @@
+from infra.gsheet import gsheet_client
 import os
 import sqlite3
 import requests
@@ -8,6 +9,10 @@ logger = logging.getLogger("Journal")
 
 
 def auto_sync_trade(trade_data):
+    try:
+        gsheet_client.append_trade(trade_data)
+    except Exception as _e:
+        pass
     webhook_url = os.getenv("GSHEET_WEBHOOK_URL", "")
     if webhook_url:
         try:
