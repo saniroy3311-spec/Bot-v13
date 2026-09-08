@@ -53,6 +53,12 @@ class IndicatorEngine:
         if candle_range < config.FILTER_ATR_MULT * atr or body_size < config.FILTER_BODY_MULT * candle_range:
             return None
 
+        # ── ANTI-EXHAUSTION GUARD ──────────────────────────────────────────
+        # Block entries if price is stretched too far from the EMA50 baseline
+        max_ema_dist = float(getattr(config, "MAX_EMA_DIST_ATR", 2.5)) * atr
+        if abs(c - ema50) > max_ema_dist:
+            return None
+
         trend_bull = c > ema200 and ema21 > ema50 and htf_slope >= 0
         trend_bear = c < ema200 and ema21 < ema50 and htf_slope <= 0
         hour = pd.to_datetime(df['timestamp'].iloc[i]).hour
