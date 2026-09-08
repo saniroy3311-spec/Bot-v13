@@ -409,3 +409,4 @@ MAX_EXIT_SLIPPAGE_ATR_PCT = float(os.environ.get("MAX_EXIT_SLIPPAGE_ATR_PCT", "1
 DELTA_TICK_DIVERGENCE_WARN_PTS = float(os.environ.get("DELTA_TICK_DIVERGENCE_WARN_PTS", "10.0"))
 
 MIN_SL_ACTION = os.environ.get("MIN_SL_ACTION", "widen").strip().lower()
+MAX_EMA_DIST_ATR = float(os.environ.get("MAX_EMA_DIST_ATR", "2.5"))
