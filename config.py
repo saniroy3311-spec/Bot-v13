@@ -64,6 +64,11 @@ All changes are .env-overridable.
 """
 import os
 
+def _env_int(key, default):
+    """Safe int cast for .env values — tolerates '18' or '0.0' without crashing."""
+    return int(float(os.environ.get(key, default)))
+
+
 try:
     from dotenv import load_dotenv
     load_dotenv(override=True)
@@ -79,7 +84,7 @@ DELTA_TESTNET    = os.environ.get("DELTA_TESTNET", "false").lower() == "true"
 DRY_RUN          = os.environ.get("DRY_RUN", "true").lower() == "true"
 
 SYMBOL    = os.environ.get("SYMBOL",    "BTC/USD:USD")
-ALERT_QTY = int(os.environ.get("ALERT_QTY", "1"))
+ALERT_QTY = _env_int("ALERT_QTY", "1")
 
 # v10: position size in BTC. Converted to lots via risk.lot_sizing.btc_to_lots
 POSITION_BTC_SIZE = float(os.environ.get("POSITION_BTC_SIZE", "0.001"))
@@ -103,8 +108,8 @@ WHATSAPP_TEMPLATE_LANG   = os.environ.get("WHATSAPP_TEMPLATE_LANG", "en")
 # ──────────────────────────────────────────────
 # INDICATOR LENGTHS  (Pine-exact)
 # ──────────────────────────────────────────────
-EMA_TREND_LEN = int(os.environ.get("EMA_TREND_LEN", "200"))
-EMA_FAST_LEN  = int(os.environ.get("EMA_FAST_LEN",  "50"))
+EMA_TREND_LEN = _env_int("EMA_TREND_LEN", "200")
+EMA_FAST_LEN  = _env_int("EMA_FAST_LEN", "50")
 ATR_LEN       = 14
 DI_LEN        = 14
 ADX_SMOOTH    = 14
@@ -117,8 +122,8 @@ RSI_LEN       = 14
 # Pine: adxTrendTh = 22, adxRangeTh = 18
 # Previously 17 to absorb a ~3-point Delta-vs-TV ADX gap. If that gap is
 # still real on your data and you miss entries, set ADX_TREND_TH=17 in .env.
-ADX_TREND_TH = int(float(os.environ.get("ADX_TREND_TH", "22")))
-ADX_RANGE_TH = int(float(os.environ.get("ADX_RANGE_TH", "18")))
+ADX_TREND_TH = _env_int("ADX_TREND_TH", "22")
+ADX_RANGE_TH = _env_int("ADX_RANGE_TH", "18")
 
 # Soft tolerance for ADX comparison. 0.0 = strict Pine match (recommended now
 # that ADX_TREND_TH is back to 22). Set higher if you see missed signals.
@@ -209,15 +214,15 @@ TRAIL_STAGES = [
 # set TIME_EXIT_MINUTES=30 (for 30m candles) in your .env. This will FORCE
 # the bot to close any open trade 30 min after entry — diverges from Pine
 # but matches the same-bar behaviour you may have wanted to enforce.
-TIME_EXIT_MINUTES = int(os.environ.get("TIME_EXIT_MINUTES", "0"))
+TIME_EXIT_MINUTES = _env_int("TIME_EXIT_MINUTES", "0")
 
 # ──────────────────────────────────────────────
 # BREAKEVEN + RSI  (PINE-ALIGNED)
 # ──────────────────────────────────────────────
 # Pine: beMult=0.6
 BE_MULT = float(os.environ.get("BE_MULT", "0.6"))
-RSI_OB  = int(os.environ.get("RSI_OB", "70"))
-RSI_OS  = int(os.environ.get("RSI_OS", "30"))
+RSI_OB  = _env_int("RSI_OB", "70")
+RSI_OS  = _env_int("RSI_OS", "30")
 
 # BREAKOUT_BUFFER_PTS = 0
 #
@@ -257,7 +262,7 @@ TRAIL_SL_PRE_FIRE_BUFFER = float(os.environ.get("TRAIL_SL_PRE_FIRE_BUFFER", "0.0
 # Fix: require price to stay beyond Initial SL for this many ms before firing.
 # Trail SL / TP / Max SL still fire immediately.
 # 0 = disabled (instant fire). 1500 = 1.5s (recommended).
-SL_CONFIRM_MS = int(os.environ.get("SL_CONFIRM_MS", "1500"))
+SL_CONFIRM_MS = _env_int("SL_CONFIRM_MS", "1500")
 
 # ──────────────────────────────────────────────
 # TRAIL OFFSET FLOOR  (REMOVED — Pine has no floor)
@@ -341,7 +346,7 @@ CLOSE_POSITIONS_ON_SHUTDOWN = False
 # ============================================================
 # TRADE GUARDS / ANTI-STREAK PROTECTION
 # ============================================================
-COOLDOWN_BARS = int(os.environ.get("COOLDOWN_BARS", "4"))
+COOLDOWN_BARS = _env_int("COOLDOWN_BARS", "4")
 MAX_CONSECUTIVE_LOSSES_PAUSE = int(
     os.environ.get("MAX_CONSECUTIVE_LOSSES_PAUSE", "2")
 )
@@ -351,7 +356,7 @@ CONSECUTIVE_LOSS_PAUSE_MINUTES = int(
 CONSECUTIVE_LOSS_SIZE_SCALE = (
     os.environ.get("CONSECUTIVE_LOSS_SIZE_SCALE", "true").lower() == "true"
 )
-MIN_SCALE_LOTS = int(os.environ.get("MIN_SCALE_LOTS", "1"))
+MIN_SCALE_LOTS = _env_int("MIN_SCALE_LOTS", "1")
 DIRECTIONAL_LOCKOUT_MINUTES = int(
     os.environ.get("DIRECTIONAL_LOCKOUT_MINUTES", "30")
 )
@@ -396,9 +401,9 @@ TRAIL_STAGE5_OFFSET = float(os.environ.get("TRAIL_STAGE5_OFFSET", "110.0"))
 
 BRACKET_SL_WIDEN_MULT = float(os.environ.get("BRACKET_SL_WIDEN_MULT", "1.5"))
 
-SL_CONFIRM_TICKS = int(os.environ.get("SL_CONFIRM_TICKS", "3"))
+SL_CONFIRM_TICKS = _env_int("SL_CONFIRM_TICKS", "3")
 
-TRAIL_SL_CONFIRM_TICKS = int(os.environ.get("TRAIL_SL_CONFIRM_TICKS", "2"))
+TRAIL_SL_CONFIRM_TICKS = _env_int("TRAIL_SL_CONFIRM_TICKS", "2")
 
 P_HARD_EXIT = os.environ.get("P_HARD_EXIT", "true").lower() == "true"
 
