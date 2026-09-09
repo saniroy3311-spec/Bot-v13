@@ -117,8 +117,8 @@ RSI_LEN       = 14
 # Pine: adxTrendTh = 22, adxRangeTh = 18
 # Previously 17 to absorb a ~3-point Delta-vs-TV ADX gap. If that gap is
 # still real on your data and you miss entries, set ADX_TREND_TH=17 in .env.
-ADX_TREND_TH = int(float(os.environ.get("ADX_TREND_TH", "22"))
-ADX_RANGE_TH = int(float(os.environ.get("ADX_RANGE_TH", "18"))
+ADX_TREND_TH = int(float(os.environ.get("ADX_TREND_TH", "22")))
+ADX_RANGE_TH = int(float(os.environ.get("ADX_RANGE_TH", "18")))
 
 # Soft tolerance for ADX comparison. 0.0 = strict Pine match (recommended now
 # that ADX_TREND_TH is back to 22). Set higher if you see missed signals.
