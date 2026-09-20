@@ -170,24 +170,54 @@ def _trail_sl_from_best(best_price: float, stage: int, atr: float, is_long: bool
     return (best_price - off) if is_long else (best_price + off)
 
 
+
+# ==============================================================================
+# FULL DYNAMIC TRAILING & ADAPTIVE STAGE ENGINE (Target Parity)
+# ==============================================================================
+def calculate_dynamic_cushion(profit_pts: float, atr: float, adx: float = 25.0, min_cushion: float = 95.0, max_cushion: float = 280.0) -> float:
+    """
+    Dynamic Adaptive Cushion:
+    - Normal Trend: cushion scales between 0.35 * ATR and 0.45 * profit_pts.
+    - Strong Expansion (> 450 pts or > 2.5 * ATR): Expands up to 280 pts to let runners breathe.
+    - Momentum Exhaustion (ADX < 18.0): Snaps tight to 95.0 pts to harvest peak profit.
+    """
+    if adx < 18.0:
+        return min_cushion
+    if profit_pts >= 450.0 or (atr > 0 and profit_pts >= 2.5 * atr):
+        dynamic_cushion = max(min_cushion, 0.40 * profit_pts)
+        return min(max_cushion, dynamic_cushion)
+    base_atr_cushion = max(min_cushion, 0.65 * atr if atr > 0 else 130.0)
+    return min(max_cushion, base_atr_cushion)
+
+def _upgrade_stage_dynamic(current_stage: int, profit_dist: float, atr: float) -> int:
+    """
+    Adaptive Stage Upgrade based on ATR Volatility multiples:
+    Stage 1: max(250.0, 1.5 * ATR)
+    Stage 2: max(400.0, 2.5 * ATR)
+    Stage 3: max(550.0, 4.0 * ATR)
+    Stage 4: max(700.0, 5.5 * ATR)
+    Stage 5: max(850.0, 7.0 * ATR)
+    """
+    t1 = max(250.0, 1.5 * atr) if atr > 0 else 300.0
+    t2 = max(400.0, 2.5 * atr) if atr > 0 else 450.0
+    t3 = max(550.0, 4.0 * atr) if atr > 0 else 600.0
+    t4 = max(700.0, 5.5 * atr) if atr > 0 else 750.0
+    t5 = max(850.0, 7.0 * atr) if atr > 0 else 900.0
+    
+    if profit_dist >= t5:
+        return max(current_stage, 5)
+    elif profit_dist >= t4:
+        return max(current_stage, 4)
+    elif profit_dist >= t3:
+        return max(current_stage, 3)
+    elif profit_dist >= t2:
+        return max(current_stage, 2)
+    elif profit_dist >= t1:
+        return max(current_stage, 1)
+    return current_stage
+
 def _upgrade_stage(current_stage: int, profit_dist: float, atr: float) -> int:
-    """
-    Returns the highest trail stage unlocked by profit_dist.
-    Stages ratchet — only upgrade, never downgrade.
-    Pine: profitDist >= atr * triggerMult  (checked at bar close, no PINE_MINTICK).
-    """
-    new_stage = current_stage
-    for i in range(len(TRAIL_STAGES) - 1, -1, -1):
-        trigger_mult, _, _ = TRAIL_STAGES[i]
-        if profit_dist >= atr * trigger_mult:
-            candidate = i + 1
-            if candidate > new_stage:
-                new_stage = candidate
-            break
-    return new_stage
-
-
-# ─── TrailMonitor ──────────────────────────────────────────────────────────────
+    return _upgrade_stage_dynamic(current_stage, profit_dist, atr)
 
 class TrailMonitor:
     """
