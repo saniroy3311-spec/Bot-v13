@@ -134,7 +134,7 @@ def _trail_pts(stage: int, atr: float) -> float:
     """
     idx = max(stage - 1, 0)
     _, pts_mult, _ = TRAIL_STAGES[idx]
-    return atr * pts_mult * PINE_MINTICK
+    return max(350.0, atr * pts_mult * PINE_MINTICK)
 
 
 def _trail_off(stage: int, atr: float) -> float:
@@ -147,7 +147,7 @@ def _trail_off(stage: int, atr: float) -> float:
     _, _, off_mult = TRAIL_STAGES[idx]
     raw   = atr * off_mult * PINE_MINTICK
     floor = atr * TRAIL_OFFSET_FLOOR_MULT
-    return max(raw, floor)
+    return max(140.0, raw, floor)
 
 
 def _activation_price(entry: float, stage: int, atr: float, is_long: bool) -> float:
